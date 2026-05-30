@@ -1,0 +1,12 @@
+version: "3.8"
+
+services:
+  api:
+    build: .
+    container_name: finance-agent-api
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+    restart: always
