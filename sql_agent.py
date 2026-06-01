@@ -1,12 +1,15 @@
 import re
 import os
 import json
+import logging
+import time
 from openai import OpenAI
 from utils import has_real_data
 from db import run_sql
 from security import validate_sql
 from db import get_agent
 
+logger = logging.getLogger("agents-poc.sql_agent")
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 SCHEMA_CONTEXT = """
@@ -249,6 +252,8 @@ RELACIONES ÚTILES PARA JOINS
 """
 
 def generate_customer_answer(question, results, agent):
+    logger.info("generating customer answer model=%s", agent.get("model"))
+    started = time.perf_counter()
     response = client.responses.create(
         model=agent["model"],
         temperature=agent["temperature"],
@@ -273,10 +278,18 @@ RESPONDE SOLO el mensaje final al cliente.
 """
     )
 
-    return response.output_text.strip()
+    text = response.output_text.strip()
+    logger.info(
+        "customer answer ready elapsed_ms=%s chars=%s",
+        int((time.perf_counter() - started) * 1000),
+        len(text),
+    )
+    return text
 
 def route_question(question: str, agent: dict):
 
+    logger.info("routing question model=%s", agent.get("model"))
+    started = time.perf_counter()
     response = client.responses.create(
         model=agent["model"],
         temperature=agent["temperature"],
@@ -314,8 +327,17 @@ Pregunta:
 
     # limpiar posibles ```json
     text = text.replace("```json", "").replace("```", "").strip()
+    logger.debug("router raw response=%s", text)
 
-    return json.loads(text)
+    route = json.loads(text)
+    logger.info(
+        "route resolved elapsed_ms=%s intent=%s tables=%s reason=%s",
+        int((time.perf_counter() - started) * 1000),
+        route.get("intent"),
+        route.get("tables"),
+        route.get("reason"),
+    )
+    return route
 
 
 def generate_sql(question, table, customer_id, schema, agent):
@@ -328,6 +350,14 @@ def generate_sql(question, table, customer_id, schema, agent):
         "dim_accounts": "plan de cuentas"
     }
 
+    logger.info(
+        "generating sql table=%s schema=%s customer_id=%s model=%s",
+        table,
+        schema,
+        customer_id,
+        agent.get("model"),
+    )
+    started = time.perf_counter()
     response = client.responses.create(
         model=agent["model"],
         temperature=agent["temperature"],
@@ -369,6 +399,7 @@ Devuelve SOLO SQL.
     )
     
     sql = response.output_text.strip()
+    logger.info("sql llm raw response table=%s:\n%s", table, sql)
 
     # 🔥 limpiar markdown
     sql = sql.replace("```sql", "").replace("```", "").strip()
@@ -377,16 +408,35 @@ Devuelve SOLO SQL.
     match = re.search(r"(SELECT.*)", sql, re.S | re.I)
 
     if not match:
+        logger.error("invalid sql generated table=%s raw=%s", table, sql[:1000])
         raise Exception(f"SQL inválido generado: {sql}")
 
     sql = match.group(1).strip()
-
-    return validate_sql(sql)
+    validated = validate_sql(sql)
+    logger.info(
+        "sql generated table=%s elapsed_ms=%s sql=%s",
+        table,
+        int((time.perf_counter() - started) * 1000),
+        validated,
+    )
+    return validated
 
 def run_financial_query(question: str, customer_id: str, schema: str, customer_type: str, agent_id: str):
 
+    pipeline_started = time.perf_counter()
+    logger.info(
+        "pipeline start agent_id=%s customer_id=%s customer_type=%s schema_param=%s question_len=%s",
+        agent_id,
+        customer_id,
+        customer_type,
+        schema,
+        len(question or ""),
+    )
+    logger.debug("pipeline question=%r", question)
+
     agent = get_agent(agent_id)
     schema = agent["schema_name"]
+    logger.info("using schema from agent schema_name=%s agent_name=%r", schema, agent.get("name"))
 
     route = route_question(question, agent)
     
@@ -395,32 +445,47 @@ def run_financial_query(question: str, customer_id: str, schema: str, customer_t
     all_sql = []
 
     for table in route["tables"]:
-
+        logger.info("processing table=%s", table)
         sql = generate_sql(question, table, customer_id, schema, agent)
 
         data = run_sql(sql, schema)
-        # ahorrar tokens si no hay data
         if not has_real_data(data):
+            logger.warning(
+                "no real data for table=%s customer_id=%s sql=%s",
+                table,
+                customer_id,
+                sql,
+            )
             return {
                 "route": route,
                 "sql": [sql],
                 "data": [],
                 "answer": "No se encontraron datos relacionados con la consulta.",
-                "customer_answer": "No encontramos información relacionada con tu consulta."
+                "customer_answer": "No encontramos información relacionada con tu consulta.",
             }
 
         all_sql.append(sql)
         all_results.append({
             "table": table,
             "sql": sql,
-            "data": data
+            "data": data,
         })
+        logger.info("table=%s rows=%s", table, len(data))
 
     if customer_type == "ADMIN":
+        logger.info("generating admin explanation")
         final_answer = explain_results(question, all_sql, all_results)
     
-    # NUEVO: respuesta cliente
+    logger.info("generating customer-facing answer")
     customer_answer = generate_customer_answer(question, all_results, agent)
+
+    logger.info(
+        "pipeline done elapsed_ms=%s tables=%s sql_count=%s admin_answer=%s",
+        int((time.perf_counter() - pipeline_started) * 1000),
+        route.get("tables"),
+        len(all_sql),
+        customer_type == "ADMIN",
+    )
 
     return {
         "route": route,
@@ -432,6 +497,8 @@ def run_financial_query(question: str, customer_id: str, schema: str, customer_t
 
 def explain_results(question, sql_list, results):
 
+    logger.info("explain_results sql_count=%s", len(sql_list))
+    started = time.perf_counter()
     response = client.responses.create(
         model="gpt-4.1-mini",
         input=f"""
@@ -453,4 +520,10 @@ Explica de forma clara:
 """
     )
 
-    return response.output_text
+    text = response.output_text
+    logger.info(
+        "admin explanation ready elapsed_ms=%s chars=%s",
+        int((time.perf_counter() - started) * 1000),
+        len(text or ""),
+    )
+    return text
