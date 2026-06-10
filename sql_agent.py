@@ -5,9 +5,8 @@ import logging
 import time
 from openai import OpenAI
 from utils import has_real_data
-from db import run_sql
+from db import run_sql, get_agent, get_customer_name
 from security import validate_sql
-from db import get_agent
 
 logger = logging.getLogger("agents-poc.sql_agent")
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -16,7 +15,10 @@ SCHEMA_CONTEXT = """
 BASE DE DATOS FINANCIERA (PostgreSQL — schema silver, referencias gold)
 
 REGLAS GLOBALES:
-- Filtra SIEMPRE por customer_id en tablas que lo tengan (dim_accounts, fact_venta, fact_bdp, presupuesto_proyeccion).
+- Filtra SIEMPRE por customer_id en tablas silver que lo tengan (dim_accounts, fact_venta, fact_bdp, presupuesto_proyeccion).
+- gold.vw_kpis_financiero NO tiene customer_id; filtra por nombre_cliente (nombre en app.customers).
+- PREFERIR gold.vw_kpis_financiero cuando la pregunta sea de KPIs/ratios/estado de resultados agregado
+  (utilidad, márgenes, ROE, ROA, liquidez, endeudamiento, semáforos, activo/pasivo/patrimonio totales).
 - dim_customers.customer_id es varchar (identificador de negocio), NO confundir con uuid customer_id de hechos.
 - fact_bdp.id_tiempo referencia gold.dim_time(id_time).
 - presupuesto_proyeccion.anio_mes formato 'YYYY-MM' (CHECK ^\\d{4}-(0[1-9]|1[0-2])$); mes es columna generada (1-12).
@@ -47,6 +49,7 @@ Por tabla — columna / patrón recomendado:
 | Tabla                  | Filtrar por                                                                 |
 |------------------------|-----------------------------------------------------------------------------|
 | fact_bdp               | source_date (date del extracto) O JOIN gold.dim_time vía id_tiempo          |
+| vw_kpis_financiero     | anio (int), anio_mes ('YYYY-MM'), mes_corto; filtrar por nombre_cliente     |
 | presupuesto_proyeccion | anio_mes ('YYYY-MM'), mes (1-12); siempre deleted_at IS NULL               |
 | fact_venta             | load_ts::date (fecha de carga; no hay fecha de factura en el modelo)        |
 | dim_accounts           | load_ts solo si pregunta por actualización del catálogo                     |
@@ -224,7 +227,53 @@ Columnas:
 Uso: balance de prueba; saldo_final total; variaciones por cuenta y periodo (id_tiempo / source_date).
 
 ──────────────────────────────────────────────────────────────────────────────
-6. silver.test_dim_accounts — plan de cuentas (PRUEBAS, sin customer_id)
+6. gold.vw_kpis_financiero — KPIs financieros pre-calculados (PREFERIR para preguntas de KPIs)
+──────────────────────────────────────────────────────────────────────────────
+Vista en schema gold. Agrega fact_bdp + gold.vw_dim_accounts + gold.dim_time + app.customers.
+Una fila por cliente, año y mes (anio_mes). NO requiere JOINs adicionales.
+
+Dimensiones:
+- anio              int — año calendario
+- anio_mes          varchar(7) — 'YYYY-MM'
+- mes_corto         varchar — nombre corto del mes
+- nombre_cliente    varchar — nombre en app.customers (filtro de cliente)
+
+Balance / estructura patrimonial:
+- activo_corriente, activo_no_corriente, activo_total
+- pasivo_corriente, pasivo_no_corriente, pasivo_total
+- patrimonio_total
+
+Estado de resultados:
+- ingresos_operacionales, ingresos_no_operacionales
+- costo_ventas_total, materia_prima, mano_obra_directa, costos_indirectos
+- gastos_administrativos, gastos_ventas, gastos_financieros, impuesto_renta
+- utilidad_bruta, utilidad_operacional, utilidad_antes_impuestos, utilidad_neta
+
+Ratios y métricas:
+- razon_corriente, capital_trabajo_neto, apalancamiento
+- pct_endeudamiento_total, pct_endeudamiento_corto_plazo, pct_autonomia_financiera
+- pct_margen_bruto, pct_margen_operacional, pct_margen_neto
+- pct_roe, pct_roa
+- pct_gastos_admin_sobre_ingresos, pct_gastos_ventas_sobre_ingresos, pct_costo_ventas_sobre_ingresos
+
+Semáforos (VERDE | AMARILLO | ROJO):
+- semaforo_liquidez, semaforo_endeudamiento, semaforo_margen_bruto, semaforo_utilidad_neta
+
+Filtro de cliente (obligatorio):
+  WHERE nombre_cliente = '<nombre del cliente>'
+
+Filtro temporal — ejemplos:
+- Mes:        WHERE anio_mes = '2025-03'
+- Año:        WHERE anio = 2025
+- Rango mes:  WHERE anio_mes BETWEEN '2025-01' AND '2025-06'
+- Último mes: WHERE anio_mes = (SELECT MAX(v.anio_mes) FROM gold.vw_kpis_financiero v
+              WHERE v.nombre_cliente = '<nombre>')
+
+Uso típico: margen bruto, utilidad neta, ROE, ROA, liquidez, endeudamiento, semáforos,
+comparación de periodos, evolución de KPIs. NO usar fact_bdp si esta vista responde la pregunta.
+
+──────────────────────────────────────────────────────────────────────────────
+7. silver.test_dim_accounts — plan de cuentas (PRUEBAS, sin customer_id)
 ──────────────────────────────────────────────────────────────────────────────
 PK: id (serial4)
 UNIQUE: (integration_id, id_auxiliar)
@@ -233,7 +282,7 @@ Misma estructura jerárquica que dim_accounts (id_auxiliar … nombre_clase, loa
 pero keyed por integration_id; NO tiene customer_id.
 
 ──────────────────────────────────────────────────────────────────────────────
-7. silver.test_fact_bdp — balance de prueba (PRUEBAS)
+8. silver.test_fact_bdp — balance de prueba (PRUEBAS)
 ──────────────────────────────────────────────────────────────────────────────
 PK: id (serial4)
 FK: id_tiempo → gold.test_dim_time(id_time)
@@ -249,7 +298,66 @@ RELACIONES ÚTILES PARA JOINS
 - fact_bdp.id_tiempo ↔ gold.dim_time.id_time (fecha/periodo)
 - presupuesto_proyeccion.cuenta / cuenta_contable ↔ fact_bdp.codigo_cuenta_contable (mismo customer_id + periodo)
 - fact_venta.customer_id = dim_accounts.customer_id = fact_bdp.customer_id = presupuesto_proyeccion.customer_id
+- vw_kpis_financiero.nombre_cliente ↔ app.customers.name (derivado de fact_bdp.customer_id)
 """
+
+TABLE_MAP = {
+    "fact_bdp": "balance de prueba",
+    "fact_venta": "ventas",
+    "presupuesto_proyeccion": "presupuesto",
+    "dim_customers": "clientes",
+    "dim_accounts": "plan de cuentas",
+    "vw_kpis_financiero": "KPIs financieros pre-calculados (balance, P&L, ratios, semáforos)",
+}
+
+KPI_TABLE = "vw_kpis_financiero"
+
+KPI_QUESTION_RE = re.compile(
+    r"\b(kpi|kpis|margen|utilidad|roe|roa|liquidez|endeudamiento|apalancamiento|"
+    r"sem[aá]foro|raz[oó]n\s+corriente|capital\s+de\s+trabajo|"
+    r"patrimonio|autonom[ií]a|ingresos\s+operacionales|"
+    r"utilidad\s+neta|utilidad\s+bruta|utilidad\s+operacional|"
+    r"costo\s+de\s+ventas|gastos\s+administrativos|estado\s+de\s+resultados)\b",
+    re.IGNORECASE,
+)
+
+
+def _maybe_route_to_kpis(question: str, route: dict) -> dict:
+    """Fallback: KPI-style questions should use the pre-aggregated view."""
+    tables = route.get("tables") or []
+    if KPI_TABLE in tables:
+        return route
+    if any(t in tables for t in ("fact_venta", "presupuesto_proyeccion", "dim_customers")):
+        return route
+    if not KPI_QUESTION_RE.search(question or ""):
+        return route
+    logger.info("kpi keywords detected; overriding route to %s", KPI_TABLE)
+    return {
+        **route,
+        "tables": [KPI_TABLE],
+        "intent": "kpis",
+        "reason": (route.get("reason") or "") + " [auto: KPI keywords → vw_kpis_financiero]",
+    }
+
+
+def _prefer_kpi_view(route: dict) -> dict:
+    """If the router picked the KPI view, answer only from it (already aggregated)."""
+    tables = route.get("tables") or []
+    if KPI_TABLE in tables:
+        logger.info("preferring %s over %s", KPI_TABLE, tables)
+        return {**route, "tables": [KPI_TABLE], "intent": route.get("intent") or "kpis"}
+    return route
+
+
+def _customer_filter_sql(customer_id: str, customer_name: str | None) -> str:
+    if customer_name:
+        escaped = customer_name.replace("'", "''")
+        return f"nombre_cliente = '{escaped}'"
+    return (
+        f"nombre_cliente = (SELECT name FROM app.customers "
+        f"WHERE id = '{customer_id}'::uuid AND deleted_at IS NULL LIMIT 1)"
+    )
+
 
 def generate_customer_answer(question, results, agent):
     logger.info("generating customer answer model=%s", agent.get("model"))
@@ -298,23 +406,32 @@ def route_question(question: str, agent: dict):
         input=f"""
 Eres un router de consultas financieras.
 
-Tablas disponibles:
+Tablas / vistas disponibles:
 
-1. fact_bdp → balance de prueba (movimientos contables)
-2. fact_venta → ventas
-3. presupuesto_proyeccion → presupuesto
-4. dim_customers → clientes
-5. dim_accounts → plan de cuentas
+1. vw_kpis_financiero → KPIs financieros PRE-CALCULADOS (PREFERIR para preguntas de KPIs)
+   Utilidad bruta/operacional/neta, márgenes %, ROE, ROA, liquidez (razón corriente),
+   endeudamiento, apalancamiento, capital de trabajo, activo/pasivo/patrimonio totales,
+   ingresos, costos, gastos agregados, semáforos (liquidez, endeudamiento, margen, utilidad).
+2. fact_bdp → balance de prueba (movimientos contables por cuenta; detalle granular)
+3. fact_venta → ventas
+4. presupuesto_proyeccion → presupuesto
+5. dim_customers → clientes
+6. dim_accounts → plan de cuentas
 
-Si la pregunta requiere varias tablas, devuelve varias.
-Si implica filtro por fechas, mes, año o periodo, menciónalo en "reason"
-(fact_bdp → source_date o gold.dim_time; presupuesto → anio_mes; ventas → load_ts).
+REGLAS DE ENRUTAMIENTO:
+- Si la pregunta se puede responder con KPIs agregados, ratios o semáforos → SOLO vw_kpis_financiero.
+  NO combines fact_bdp ni dim_accounts si la vista basta.
+- Usa fact_bdp solo para detalle por cuenta, movimientos, saldos por código contable.
+- Si la pregunta requiere varias fuentes distintas (ej. ventas + presupuesto), devuelve varias tablas.
+- Si implica filtro por fechas, mes, año o periodo, menciónalo en "reason"
+  (vw_kpis_financiero → anio / anio_mes; fact_bdp → source_date o gold.dim_time;
+  presupuesto → anio_mes; ventas → load_ts).
 
 RESPONDE SOLO JSON así:
 
 {{
-  "intent": "ventas | balance | presupuesto | clientes | cuentas | mixto",
-  "tables": ["fact_venta"],
+  "intent": "kpis | ventas | balance | presupuesto | clientes | cuentas | mixto",
+  "tables": ["vw_kpis_financiero"],
   "reason": "..."
 }}
 
@@ -342,14 +459,6 @@ Pregunta:
 
 def generate_sql(question, table, customer_id, schema, agent):
 
-    table_map = {
-        "fact_bdp": "balance de prueba",
-        "fact_venta": "ventas",
-        "presupuesto_proyeccion": "presupuesto",
-        "dim_customers": "clientes",
-        "dim_accounts": "plan de cuentas"
-    }
-
     logger.info(
         "generating sql table=%s schema=%s customer_id=%s model=%s",
         table,
@@ -358,12 +467,45 @@ def generate_sql(question, table, customer_id, schema, agent):
         agent.get("model"),
     )
     started = time.perf_counter()
-    response = client.responses.create(
-        model=agent["model"],
-        temperature=agent["temperature"],
-        top_p=agent["top_p"],
-        max_output_tokens=agent["max_tokens"],
-        input=f"""
+
+    if table == KPI_TABLE:
+        customer_name = get_customer_name(customer_id)
+        customer_filter = _customer_filter_sql(customer_id, customer_name)
+        prompt = f"""
+Eres un experto en SQL PostgreSQL financiero.
+
+{SCHEMA_CONTEXT}
+
+CONTEXTO:
+customer_id: {customer_id}
+nombre_cliente resuelto: {customer_name or '(usar subconsulta en WHERE)'}
+
+VISTA ACTUAL:
+gold.vw_kpis_financiero
+
+DESCRIPCIÓN:
+{TABLE_MAP[KPI_TABLE]}
+
+REGLAS (OBLIGATORIAS):
+- SOLO SELECT
+- Consulta ÚNICAMENTE gold.vw_kpis_financiero (schema gold, nombre completo)
+- NO hagas JOIN con fact_bdp, dim_accounts ni otras tablas; los KPIs ya están calculados
+- SIEMPRE filtra el cliente: WHERE {customer_filter}
+- FECHAS: si la pregunta menciona periodo, mes, año o "último periodo", filtra con
+  anio_mes ('YYYY-MM') o anio (int). Para último periodo usa subconsulta MAX(anio_mes).
+- Si la pregunta NO pide filtro temporal, devuelve los periodos más recientes
+  (ORDER BY anio DESC, anio_mes DESC LIMIT 12) salvo que pida un total/histórico explícito.
+- Selecciona solo las columnas relevantes para la pregunta (no SELECT * salvo que pida resumen completo)
+- máximo 50 filas
+- NO uses customer_id en el WHERE (la vista expone nombre_cliente)
+
+PREGUNTA:
+{question}
+
+Devuelve SOLO SQL.
+"""
+    else:
+        prompt = f"""
 Eres un experto en SQL PostgreSQL financiero.
 
 {SCHEMA_CONTEXT}
@@ -376,11 +518,13 @@ TABLA ACTUAL:
 {table}
 
 DESCRIPCIÓN:
-{table_map.get(table, "")}
+{TABLE_MAP.get(table, "")}
 
 REGLAS:
 - SOLO SELECT
 - SIEMPRE filtra por customer_id = '{customer_id}' en tablas que tengan esa columna
+- Si la pregunta es de KPIs agregados (márgenes, ROE, utilidad, semáforos), NO uses esta tabla;
+  deberías usar gold.vw_kpis_financiero en su lugar.
 - FECHAS: si la pregunta menciona periodo, mes, año, trimestre, rango o "último periodo",
   aplica filtro temporal según la sección FILTRADO POR FECHAS Y PERIODOS del contexto.
   En fact_bdp puedes JOIN gold.dim_time t ON t.id_time = {schema}.fact_bdp.id_tiempo
@@ -396,6 +540,13 @@ PREGUNTA:
 
 Devuelve SOLO SQL.
 """
+
+    response = client.responses.create(
+        model=agent["model"],
+        temperature=agent["temperature"],
+        top_p=agent["top_p"],
+        max_output_tokens=agent["max_tokens"],
+        input=prompt,
     )
     
     sql = response.output_text.strip()
@@ -439,7 +590,9 @@ def run_financial_query(question: str, customer_id: str, schema: str, customer_t
     logger.info("using schema from agent schema_name=%s agent_name=%r", schema, agent.get("name"))
 
     route = route_question(question, agent)
-    
+    route = _maybe_route_to_kpis(question, route)
+    route = _prefer_kpi_view(route)
+
     final_answer = None
     all_results = []
     all_sql = []

@@ -84,6 +84,35 @@ def get_agent(agent_id: str):
         conn.close()
 
 
+def get_customer_name(customer_id: str) -> str | None:
+    """Resolve app.customers.name from UUID (for gold views filtered by nombre_cliente)."""
+    logger.info("resolving customer name customer_id=%s", customer_id)
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT name FROM app.customers
+            WHERE id = %s::uuid AND deleted_at IS NULL
+            LIMIT 1
+            """,
+            (customer_id,),
+        )
+        row = cur.fetchone()
+        if not row or not row[0]:
+            logger.warning("customer name not found customer_id=%s", customer_id)
+            return None
+        name = str(row[0]).strip()
+        logger.info("customer name resolved customer_id=%s name=%r", customer_id, name)
+        return name or None
+    except Exception:
+        logger.exception("failed to resolve customer name customer_id=%s", customer_id)
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
 def run_sql(query: str, schema: str):
     logger.info("executing sql schema=%s", schema)
     logger.debug("sql query=%s", query)
