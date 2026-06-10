@@ -103,7 +103,7 @@ def get_customer_name(customer_id: str) -> str | None:
             logger.warning("customer name not found customer_id=%s", customer_id)
             return None
         name = str(row[0]).strip()
-        logger.info("customer name resolved customer_id=%s name=%r", customer_id, name)
+        logger.info("customer name resolved customer_id=%s", customer_id)
         return name or None
     except Exception:
         logger.exception("failed to resolve customer name customer_id=%s", customer_id)
@@ -113,9 +113,10 @@ def get_customer_name(customer_id: str) -> str | None:
         conn.close()
 
 
-def run_sql(query: str, schema: str):
-    logger.info("executing sql schema=%s", schema)
-    logger.debug("sql query=%s", query)
+def run_sql(query: str, schema: str, source: str | None = None):
+    source_label = source or schema
+    logger.info("executing sql source=%s search_path=%s", source_label, schema)
+    logger.debug("sql query source=%s body=%s", source_label, query)
     started = time.perf_counter()
 
     conn = get_connection()
@@ -129,8 +130,8 @@ def run_sql(query: str, schema: str):
         result = [dict(zip(colnames, row)) for row in rows]
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         logger.info(
-            "sql done schema=%s rows=%s columns=%s elapsed_ms=%s",
-            schema,
+            "sql done source=%s rows=%s columns=%s elapsed_ms=%s",
+            source_label,
             len(result),
             colnames,
             elapsed_ms,
@@ -139,7 +140,7 @@ def run_sql(query: str, schema: str):
             logger.debug("sql first row sample=%s", _sample_row(result[0]))
         return result
     except Exception:
-        logger.exception("sql failed schema=%s query=%s", schema, query)
+        logger.exception("sql failed source=%s search_path=%s", source_label, schema)
         raise
     finally:
         cur.close()

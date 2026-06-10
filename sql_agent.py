@@ -7,6 +7,17 @@ from openai import OpenAI
 from utils import has_real_data
 from db import run_sql, get_agent, get_customer_name
 from security import validate_sql
+from data_privacy import (
+    CUSTOMER_ID_PLACEHOLDER,
+    LLM_SAFETY_INSTRUCTION,
+    apply_customer_id_placeholder,
+    build_privacy_secrets,
+    customer_filter_sql,
+    inject_customer_filter,
+    sanitize_results_for_llm,
+    sanitize_sql_for_llm,
+    sanitize_text_for_llm,
+)
 
 logger = logging.getLogger("agents-poc.sql_agent")
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -259,15 +270,15 @@ Ratios y métricas:
 Semáforos (VERDE | AMARILLO | ROJO):
 - semaforo_liquidez, semaforo_endeudamiento, semaforo_margen_bruto, semaforo_utilidad_neta
 
-Filtro de cliente (obligatorio):
-  WHERE nombre_cliente = '<nombre del cliente>'
+Filtro de cliente:
+  NO lo incluyas en el SQL; el servidor añade el filtro por nombre_cliente automáticamente.
 
-Filtro temporal — ejemplos:
+Filtro temporal — ejemplos (solo periodo; sin filtro de cliente):
 - Mes:        WHERE anio_mes = '2025-03'
 - Año:        WHERE anio = 2025
 - Rango mes:  WHERE anio_mes BETWEEN '2025-01' AND '2025-06'
-- Último mes: WHERE anio_mes = (SELECT MAX(v.anio_mes) FROM gold.vw_kpis_financiero v
-              WHERE v.nombre_cliente = '<nombre>')
+- Último mes: ORDER BY anio DESC, anio_mes DESC LIMIT 1
+  (o subconsulta MAX(anio_mes) sin filtrar por nombre de cliente)
 
 Uso típico: margen bruto, utilidad neta, ROE, ROA, liquidez, endeudamiento, semáforos,
 comparación de periodos, evolución de KPIs. NO usar fact_bdp si esta vista responde la pregunta.
@@ -312,6 +323,20 @@ TABLE_MAP = {
 
 KPI_TABLE = "vw_kpis_financiero"
 
+GOLD_SOURCES = frozenset({KPI_TABLE})
+
+
+def qualified_source(table: str, schema: str) -> str:
+    """Nombre calificado schema.tabla o schema.vista para logs."""
+    if table in GOLD_SOURCES:
+        return f"gold.{table}"
+    return f"{schema}.{table}"
+
+
+def qualified_sources(tables: list[str], schema: str) -> list[str]:
+    return [qualified_source(t, schema) for t in tables]
+
+
 KPI_QUESTION_RE = re.compile(
     r"\b(kpi|kpis|margen|utilidad|roe|roa|liquidez|endeudamiento|apalancamiento|"
     r"sem[aá]foro|raz[oó]n\s+corriente|capital\s+de\s+trabajo|"
@@ -349,16 +374,6 @@ def _prefer_kpi_view(route: dict) -> dict:
     return route
 
 
-def _customer_filter_sql(customer_id: str, customer_name: str | None) -> str:
-    if customer_name:
-        escaped = customer_name.replace("'", "''")
-        return f"nombre_cliente = '{escaped}'"
-    return (
-        f"nombre_cliente = (SELECT name FROM app.customers "
-        f"WHERE id = '{customer_id}'::uuid AND deleted_at IS NULL LIMIT 1)"
-    )
-
-
 def generate_customer_answer(question, results, agent):
     logger.info("generating customer answer model=%s", agent.get("model"))
     started = time.perf_counter()
@@ -375,11 +390,12 @@ Tu tarea:
 - máximo 2-3 líneas
 - sin tecnicismos
 - directo y claro
+{LLM_SAFETY_INSTRUCTION}
 
 PREGUNTA:
 {question}
 
-RESULTADOS:
+RESULTADOS (sin datos identificables):
 {results}
 
 RESPONDE SOLO el mensaje final al cliente.
@@ -447,11 +463,12 @@ Pregunta:
     logger.debug("router raw response=%s", text)
 
     route = json.loads(text)
+    tables = route.get("tables") or []
     logger.info(
-        "route resolved elapsed_ms=%s intent=%s tables=%s reason=%s",
+        "route resolved elapsed_ms=%s intent=%s route_tables=%s reason=%s",
         int((time.perf_counter() - started) * 1000),
         route.get("intent"),
-        route.get("tables"),
+        tables,
         route.get("reason"),
     )
     return route
@@ -459,26 +476,20 @@ Pregunta:
 
 def generate_sql(question, table, customer_id, schema, agent):
 
+    source = qualified_source(table, schema)
     logger.info(
-        "generating sql table=%s schema=%s customer_id=%s model=%s",
+        "generating sql source=%s route_table=%s model=%s",
+        source,
         table,
-        schema,
-        customer_id,
         agent.get("model"),
     )
     started = time.perf_counter()
 
     if table == KPI_TABLE:
-        customer_name = get_customer_name(customer_id)
-        customer_filter = _customer_filter_sql(customer_id, customer_name)
         prompt = f"""
 Eres un experto en SQL PostgreSQL financiero.
 
 {SCHEMA_CONTEXT}
-
-CONTEXTO:
-customer_id: {customer_id}
-nombre_cliente resuelto: {customer_name or '(usar subconsulta en WHERE)'}
 
 VISTA ACTUAL:
 gold.vw_kpis_financiero
@@ -490,14 +501,14 @@ REGLAS (OBLIGATORIAS):
 - SOLO SELECT
 - Consulta ÚNICAMENTE gold.vw_kpis_financiero (schema gold, nombre completo)
 - NO hagas JOIN con fact_bdp, dim_accounts ni otras tablas; los KPIs ya están calculados
-- SIEMPRE filtra el cliente: WHERE {customer_filter}
+- NO filtres por cliente ni incluyas nombre_cliente; el servidor aplica el alcance del cliente
+- NO selecciones la columna nombre_cliente
 - FECHAS: si la pregunta menciona periodo, mes, año o "último periodo", filtra con
-  anio_mes ('YYYY-MM') o anio (int). Para último periodo usa subconsulta MAX(anio_mes).
+  anio_mes ('YYYY-MM') o anio (int). Para último periodo usa ORDER BY anio DESC, anio_mes DESC LIMIT 1.
 - Si la pregunta NO pide filtro temporal, devuelve los periodos más recientes
   (ORDER BY anio DESC, anio_mes DESC LIMIT 12) salvo que pida un total/histórico explícito.
 - Selecciona solo las columnas relevantes para la pregunta (no SELECT * salvo que pida resumen completo)
 - máximo 50 filas
-- NO uses customer_id en el WHERE (la vista expone nombre_cliente)
 
 PREGUNTA:
 {question}
@@ -511,8 +522,7 @@ Eres un experto en SQL PostgreSQL financiero.
 {SCHEMA_CONTEXT}
 
 CONTEXTO:
-schema: {schema}
-customer_id: {customer_id}
+schema silver: {schema}
 
 TABLA ACTUAL:
 {table}
@@ -522,7 +532,7 @@ DESCRIPCIÓN:
 
 REGLAS:
 - SOLO SELECT
-- SIEMPRE filtra por customer_id = '{customer_id}' en tablas que tengan esa columna
+- SIEMPRE filtra por customer_id = '{CUSTOMER_ID_PLACEHOLDER}' en tablas que tengan esa columna
 - Si la pregunta es de KPIs agregados (márgenes, ROE, utilidad, semáforos), NO uses esta tabla;
   deberías usar gold.vw_kpis_financiero en su lugar.
 - FECHAS: si la pregunta menciona periodo, mes, año, trimestre, rango o "último periodo",
@@ -550,7 +560,8 @@ Devuelve SOLO SQL.
     )
     
     sql = response.output_text.strip()
-    logger.info("sql llm raw response table=%s:\n%s", table, sql)
+    logger.info("sql llm raw response table=%s len=%s", table, len(sql))
+    logger.debug("sql llm raw response table=%s:\n%s", table, sql)
 
     # 🔥 limpiar markdown
     sql = sql.replace("```sql", "").replace("```", "").strip()
@@ -563,13 +574,21 @@ Devuelve SOLO SQL.
         raise Exception(f"SQL inválido generado: {sql}")
 
     sql = match.group(1).strip()
+
+    if table == KPI_TABLE:
+        filter_clause = customer_filter_sql(customer_id, get_customer_name(customer_id))
+        sql = inject_customer_filter(sql, filter_clause)
+    else:
+        sql = apply_customer_id_placeholder(sql, customer_id)
+
     validated = validate_sql(sql)
     logger.info(
-        "sql generated table=%s elapsed_ms=%s sql=%s",
+        "sql generated table=%s elapsed_ms=%s len=%s",
         table,
         int((time.perf_counter() - started) * 1000),
-        validated,
+        len(validated),
     )
+    logger.debug("sql generated table=%s body=%s", table, validated)
     return validated
 
 def run_financial_query(question: str, customer_id: str, schema: str, customer_type: str, agent_id: str):
@@ -589,28 +608,44 @@ def run_financial_query(question: str, customer_id: str, schema: str, customer_t
     schema = agent["schema_name"]
     logger.info("using schema from agent schema_name=%s agent_name=%r", schema, agent.get("name"))
 
-    route = route_question(question, agent)
-    route = _maybe_route_to_kpis(question, route)
+    customer_name = get_customer_name(customer_id)
+    privacy_secrets = build_privacy_secrets(customer_id, customer_name)
+    safe_question = sanitize_text_for_llm(question, privacy_secrets)
+
+    route = route_question(safe_question, agent)
+    route = _maybe_route_to_kpis(safe_question, route)
     route = _prefer_kpi_view(route)
+
+    route_tables = route.get("tables") or []
+    sources_planned = qualified_sources(route_tables, schema)
+    logger.info(
+        "sources to consult count=%s list=%s",
+        len(sources_planned),
+        sources_planned,
+    )
 
     final_answer = None
     all_results = []
     all_sql = []
+    sources_consulted: list[str] = []
 
-    for table in route["tables"]:
-        logger.info("processing table=%s", table)
-        sql = generate_sql(question, table, customer_id, schema, agent)
+    for table in route_tables:
+        source = qualified_source(table, schema)
+        logger.info("consulting source=%s route_table=%s", source, table)
+        sql = generate_sql(safe_question, table, customer_id, schema, agent)
 
-        data = run_sql(sql, schema)
+        data = run_sql(sql, schema, source=source)
+        sources_consulted.append(source)
         if not has_real_data(data):
             logger.warning(
-                "no real data for table=%s customer_id=%s sql=%s",
+                "no real data source=%s route_table=%s customer_id=%s",
+                source,
                 table,
                 customer_id,
-                sql,
             )
             return {
                 "route": route,
+                "sources_consulted": sources_consulted,
                 "sql": [sql],
                 "data": [],
                 "answer": "No se encontraron datos relacionados con la consulta.",
@@ -623,25 +658,29 @@ def run_financial_query(question: str, customer_id: str, schema: str, customer_t
             "sql": sql,
             "data": data,
         })
-        logger.info("table=%s rows=%s", table, len(data))
+        logger.info("consulted source=%s rows=%s", source, len(data))
+
+    llm_results = sanitize_results_for_llm(all_results, privacy_secrets)
+    safe_sql_list = [sanitize_sql_for_llm(s, privacy_secrets) for s in all_sql]
 
     if customer_type == "ADMIN":
         logger.info("generating admin explanation")
-        final_answer = explain_results(question, all_sql, all_results)
+        final_answer = explain_results(safe_question, safe_sql_list, llm_results)
     
     logger.info("generating customer-facing answer")
-    customer_answer = generate_customer_answer(question, all_results, agent)
+    customer_answer = generate_customer_answer(safe_question, llm_results, agent)
 
     logger.info(
-        "pipeline done elapsed_ms=%s tables=%s sql_count=%s admin_answer=%s",
+        "pipeline done elapsed_ms=%s sources_consulted=%s sql_count=%s admin_answer=%s",
         int((time.perf_counter() - pipeline_started) * 1000),
-        route.get("tables"),
+        sources_consulted,
         len(all_sql),
         customer_type == "ADMIN",
     )
 
     return {
         "route": route,
+        "sources_consulted": sources_consulted,
         "sql": all_sql,
         "data": all_results,
         "answer": final_answer,
@@ -656,14 +695,15 @@ def explain_results(question, sql_list, results):
         model="gpt-4.1-mini",
         input=f"""
 Eres un analista financiero senior.
+{LLM_SAFETY_INSTRUCTION}
 
 Pregunta:
 {question}
 
-SQL ejecutados:
+SQL ejecutados (identificadores redactados):
 {sql_list}
 
-Resultados:
+Resultados (sin columnas identificables):
 {results}
 
 Explica de forma clara:

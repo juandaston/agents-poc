@@ -98,11 +98,12 @@ def query(payload: QueryRequest):
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         route = result.get("route") if isinstance(result, dict) else None
         sql_count = len(result.get("sql") or []) if isinstance(result, dict) else 0
+        sources = result.get("sources_consulted") if isinstance(result, dict) else None
         logger.info(
-            "query success elapsed_ms=%s intent=%s tables=%s sql_count=%s has_answer=%s",
+            "query success elapsed_ms=%s intent=%s sources_consulted=%s sql_count=%s has_answer=%s",
             elapsed_ms,
             route.get("intent") if isinstance(route, dict) else None,
-            route.get("tables") if isinstance(route, dict) else None,
+            sources,
             sql_count,
             bool(result.get("answer")) if isinstance(result, dict) else False,
         )
