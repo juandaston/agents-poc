@@ -10,7 +10,8 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - DATABASE_URL=${DATABASE_URL}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - SEMANTIC_CATALOG_DIR=/app/semantic
+      # Live mount from siigo-api (local dev). If missing/empty, image uses /app/semantic.
+      - SEMANTIC_CATALOG_DIR=/app/semantic-live
     volumes:
-      - ../siigo-api/core/semantic:/app/semantic:ro
+      - ../siigo-api/core/semantic:/app/semantic-live:ro
     restart: always

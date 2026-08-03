@@ -25,19 +25,36 @@ _CATALOG_FILENAME = "catalog.yaml"
 _CONTEXT_FILENAME = "schema_context.md"
 
 
+def _has_catalog(directory: Path) -> bool:
+    return (directory / _CATALOG_FILENAME).is_file()
+
+
 def _candidate_dirs() -> list[Path]:
     here = Path(__file__).resolve().parent
     env_dir = os.getenv("SEMANTIC_CATALOG_DIR", "").strip()
-    candidates = []
+    candidates: list[Path] = []
+
     if env_dir:
-        candidates.append(Path(env_dir))
+        env_path = Path(env_dir)
+        if _has_catalog(env_path):
+            candidates.append(env_path)
+        else:
+            logger.warning(
+                "SEMANTIC_CATALOG_DIR=%s has no %s; using bundled/local fallbacks",
+                env_dir,
+                _CATALOG_FILENAME,
+            )
+
     candidates.extend(
         [
+            # Bundled in the Docker image (COPY semantic/ → /app/semantic).
             here / "semantic",
+            # docker-compose mounts siigo-api here so it does not shadow /app/semantic.
+            Path("/app/semantic-live"),
             here.parent / "siigo-api" / "core" / "semantic",
-            Path("/app/semantic"),
         ]
     )
+
     out: list[Path] = []
     seen: set[str] = set()
     for p in candidates:
