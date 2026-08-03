@@ -10,4 +10,7 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - DATABASE_URL=${DATABASE_URL}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SEMANTIC_CATALOG_DIR=/app/semantic
+    volumes:
+      - ../siigo-api/core/semantic:/app/semantic:ro
     restart: always

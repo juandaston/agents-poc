@@ -1,0 +1,125 @@
+# Capa semántica Valia — fuente de verdad para agentes, analytics y tableros.
+# Consumidores: agents-poc (text-to-SQL), core/analytics (allowlist gold).
+version: 1
+
+kpi_entity: vw_kpis_financiero
+gold_schema: gold
+
+global_rules:
+  - Filtra SIEMPRE por customer_id en tablas silver (dim_accounts, fact_venta, fact_bdp, presupuesto_proyeccion).
+  - gold.vw_kpis_financiero NO tiene customer_id; el servidor aplica filtro por nombre_cliente.
+  - PREFERIR gold.vw_kpis_financiero para KPIs, ratios, semáforos y estado de resultados agregado.
+  - dim_customers.customer_id es varchar (id negocio), NO confundir con uuid customer_id de hechos.
+  - fact_bdp.id_tiempo referencia gold.dim_time(id_time).
+  - presupuesto_proyeccion.anio_mes formato YYYY-MM; siempre deleted_at IS NULL.
+  - Preferir tablas productivas; test_* solo en entornos de prueba.
+
+entities:
+  vw_kpis_financiero:
+    route_key: vw_kpis_financiero
+    qualified_name: gold.vw_kpis_financiero
+    layer: gold
+    kind: view
+    description: KPIs financieros pre-calculados (balance, P&L, ratios, semáforos)
+    prefer_for: [kpis, margen, utilidad, roe, roa, liquidez, endeudamiento, semaforo]
+    customer_filter: server_nombre_cliente
+    time_columns: [anio, anio_mes, mes_corto]
+    grain: [nombre_cliente, anio_mes]
+    metrics:
+      balance: [activo_corriente, activo_no_corriente, activo_total, pasivo_corriente, pasivo_no_corriente, pasivo_total, patrimonio_total]
+      resultados: [ingresos_operacionales, costo_ventas_total, utilidad_bruta, utilidad_operacional, utilidad_neta]
+      ratios: [razon_corriente, pct_margen_bruto, pct_margen_neto, pct_roe, pct_roa, apalancamiento]
+      semaforos: [semaforo_liquidez, semaforo_endeudamiento, semaforo_margen_bruto, semaforo_utilidad_neta]
+
+  fact_bdp:
+    route_key: fact_bdp
+    qualified_pattern: "{schema}.fact_bdp"
+    layer: silver
+    kind: table
+    description: balance de prueba (movimientos contables por cuenta)
+    prefer_for: [balance, movimientos, saldo por cuenta, detalle contable]
+    customer_filter: customer_id
+    time_columns: [source_date, id_tiempo]
+    time_via: gold.dim_time
+
+  fact_venta:
+    route_key: fact_venta
+    qualified_pattern: "{schema}.fact_venta"
+    layer: silver
+    kind: table
+    description: ventas / líneas de facturación
+    prefer_for: [ventas, facturacion]
+    customer_filter: customer_id
+    time_columns: [load_ts]
+
+  presupuesto_proyeccion:
+    route_key: presupuesto_proyeccion
+    qualified_pattern: "{schema}.presupuesto_proyeccion"
+    layer: silver
+    kind: table
+    description: presupuesto / proyección mensual por cuenta
+    prefer_for: [presupuesto, proyeccion]
+    customer_filter: customer_id
+    time_columns: [anio_mes, mes]
+
+  dim_customers:
+    route_key: dim_customers
+    qualified_pattern: "{schema}.dim_customers"
+    layer: silver
+    kind: table
+    description: maestro de clientes (dimensión Siigo)
+    customer_filter: none
+
+  dim_accounts:
+    route_key: dim_accounts
+    qualified_pattern: "{schema}.dim_accounts"
+    layer: silver
+    kind: table
+    description: plan de cuentas / auxiliares contables
+    prefer_for: [cuentas, plan contable]
+    customer_filter: customer_id
+
+routing:
+  intents: [kpis, ventas, balance, presupuesto, clientes, cuentas, mixto]
+  router_order:
+    - vw_kpis_financiero
+    - fact_bdp
+    - fact_venta
+    - presupuesto_proyeccion
+    - dim_customers
+    - dim_accounts
+  kpi_keywords:
+    - kpi
+    - kpis
+    - margen
+    - utilidad
+    - roe
+    - roa
+    - liquidez
+    - endeudamiento
+    - apalancamiento
+    - semaforo
+    - semáforo
+    - razon corriente
+    - razón corriente
+    - capital de trabajo
+    - patrimonio
+    - autonomia
+    - autonomía
+    - ingresos operacionales
+    - utilidad neta
+    - utilidad bruta
+    - utilidad operacional
+    - costo de ventas
+    - gastos administrativos
+    - estado de resultados
+  rules:
+    - Si la pregunta se responde con KPIs agregados → SOLO vw_kpis_financiero.
+    - Usa fact_bdp solo para detalle por cuenta o movimientos granulares.
+    - Ventas + presupuesto en la misma pregunta → tablas mixtas.
+
+relationships:
+  - fact_bdp.codigo_cuenta_contable ↔ dim_accounts.id_auxiliar (mismo customer_id)
+  - fact_bdp.id_tiempo ↔ gold.dim_time.id_time
+  - presupuesto_proyeccion ↔ fact_bdp por cuenta y periodo (anio_mes / source_date)
+  - vw_kpis_financiero.nombre_cliente ↔ app.customers.name

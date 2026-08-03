@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from logging_setup import setup_logging
+from semantic_loader import get_semantic_dir
 from sql_agent import run_financial_query
 
 setup_logging()
@@ -23,6 +24,15 @@ class QueryRequest(BaseModel):
 
 
 app = FastAPI()
+
+
+@app.on_event("startup")
+def _log_semantic_layer():
+    try:
+        logger.info("semantic layer loaded from %s", get_semantic_dir())
+    except Exception as exc:
+        logger.error("semantic layer failed to load: %s", exc)
+
 
 app.add_middleware(
     CORSMiddleware,
