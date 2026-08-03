@@ -4,12 +4,12 @@ import uuid
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from logging_setup import setup_logging
 from semantic_loader import get_semantic_dir
 from sql_agent import run_financial_query
+from user_errors import friendly_error_payload
 
 setup_logging()
 logger = logging.getLogger("agents-poc.api")
@@ -127,7 +127,4 @@ def query(payload: QueryRequest):
             payload.customer_id,
             exc,
         )
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(exc), "type": type(exc).__name__},
-        )
+        return friendly_error_payload()

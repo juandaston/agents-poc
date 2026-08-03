@@ -235,12 +235,13 @@ REGLAS:
   deberías usar gold.vw_kpis_financiero en su lugar.
 - FECHAS: si la pregunta menciona periodo, mes, año, trimestre, rango o "último periodo",
   aplica filtro temporal según la sección FILTRADO POR FECHAS Y PERIODOS del contexto.
-  En fact_bdp puedes JOIN gold.dim_time t ON t.id_time = {schema}.fact_bdp.id_tiempo
-  (califica tablas con schema {schema} para silver; gold.dim_time sin prefijo silver).
-  En presupuesto_proyeccion usa anio_mes/mes y deleted_at IS NULL.
+  fact_bdp: source_date O JOIN gold.dim_time t ON t.id_time = {schema}.fact_bdp.id_tiempo
+  (id_tiempo SOLO existe en fact_bdp, nunca en fact_venta).
+  fact_venta: invoice_date (fecha de factura) O JOIN gold.dim_time_sales dt ON dt.Date = {schema}.fact_venta.invoice_date
+  (NO uses id_tiempo ni gold.dim_time en fact_venta).
+  presupuesto_proyeccion: anio_mes/mes y deleted_at IS NULL.
 - Si la pregunta NO pide filtro temporal, no agregues condiciones de fecha.
 - máximo 50 rows
-- usa SOLO la tabla {table} más gold.dim_time si hace falta filtrar fechas en fact_bdp
 - califica tablas silver como {schema}.nombre_tabla en el SQL
 
 PREGUNTA:

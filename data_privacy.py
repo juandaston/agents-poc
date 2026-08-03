@@ -39,7 +39,11 @@ SENSITIVE_COLUMN_NAMES = frozenset({
     "metadata_customer_email",
 })
 
-_BOUNDARY_TOKENS = (" order by ", " group by ", " limit ", " offset ", " fetch ")
+# Insert customer filter before the earliest trailing clause (regex handles newlines).
+_CLAUSE_BOUNDARY_RE = re.compile(
+    r"\b(order\s+by|group\s+by|limit|offset|fetch\s+first)\b",
+    re.IGNORECASE,
+)
 
 
 def build_privacy_secrets(
@@ -132,21 +136,22 @@ def customer_filter_sql(customer_id: str, customer_name: str | None = None) -> s
 def inject_customer_filter(sql: str, filter_clause: str) -> str:
     """Añade filtro de cliente al SQL generado (vw_kpis_financiero y similares)."""
     sql = sql.strip().rstrip(";")
-    lowered = sql.lower()
 
-    insert_at = len(sql)
-    for token in _BOUNDARY_TOKENS:
-        idx = lowered.find(token)
-        if idx != -1:
-            insert_at = min(insert_at, idx)
-
-    head = sql[:insert_at].rstrip()
-    tail = sql[insert_at:]
-
-    if re.search(r"\bwhere\b", head, re.IGNORECASE):
-        merged = f"{head} AND ({filter_clause}){tail}"
+    boundary = _CLAUSE_BOUNDARY_RE.search(sql)
+    if boundary:
+        core = sql[: boundary.start()].rstrip()
+        tail = sql[boundary.start() :].strip()
     else:
-        merged = f"{head} WHERE ({filter_clause}){tail}"
+        core = sql.rstrip()
+        tail = ""
+
+    if re.search(r"\bwhere\b", core, re.IGNORECASE):
+        merged = f"{core} AND ({filter_clause})"
+    else:
+        merged = f"{core} WHERE ({filter_clause})"
+
+    if tail:
+        merged = f"{merged} {tail}"
 
     logger.info("injected server-side customer filter into sql")
     return merged
