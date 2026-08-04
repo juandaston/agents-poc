@@ -14,6 +14,7 @@ global_rules:
   - fact_bdp.id_tiempo referencia gold.dim_time(id_time) — SOLO fact_bdp tiene id_tiempo.
   - fact_venta: filtrar fechas SOLO con columnas de la tabla (invoice_date, load_ts). NO JOIN gold.dim_time_sales ni gold.dim_time.
   - fact_venta incluye fila fallback cuando la factura no trae ítems (product_name = Sin detalle de ítems).
+  - EXTRACT filtra Siigo por created_start/created_end (creación del documento); SILVER/ANALYTICS usan invoice_date / credit_note_date (elaboración). No mezclar criterios en comparaciones mensuales.
   - presupuesto_proyeccion.anio_mes formato YYYY-MM; siempre deleted_at IS NULL.
   - Preferir tablas productivas; test_* solo en entornos de prueba.
 

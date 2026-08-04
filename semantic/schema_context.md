@@ -10,6 +10,9 @@ REGLAS GLOBALES:
 - fact_bdp.id_tiempo referencia gold.dim_time(id_time) — SOLO fact_bdp; fact_venta NO tiene id_tiempo.
 - fact_venta: filtrar fechas SOLO con invoice_date o load_ts en silver.fact_venta. NO JOIN a gold.dim_time_sales ni gold.dim_time.
 - fact_venta incluye fila fallback cuando la factura no trae ítems (product_name = Sin detalle de ítems).
+- EXTRACT Siigo usa created_start/created_end (fecha de creación del documento en Siigo).
+  SILVER y gold.vw_ventas_netas_mes usan invoice_date / credit_note_date (fecha de elaboración).
+  Una factura elaborada en junio pero creada en Siigo en julio entra al extract de julio con invoice_date de junio.
 - presupuesto_proyeccion.anio_mes formato 'YYYY-MM' (CHECK ^\\d{4}-(0[1-9]|1[0-2])$); mes es columna generada (1-12).
 - Tablas test_* son entornos de prueba; preferir tablas productivas salvo que se indique lo contrario.
 
