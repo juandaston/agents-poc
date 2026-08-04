@@ -213,6 +213,37 @@ PREGUNTA:
 
 Devuelve SOLO SQL.
 """
+    elif table == "fact_venta":
+        prompt = f"""
+Eres un experto en SQL PostgreSQL financiero.
+
+{schema_ctx}
+
+TABLA ACTUAL:
+{schema}.fact_venta
+
+DESCRIPCIÓN:
+{table_map.get(table, "")}
+
+REGLAS (OBLIGATORIAS):
+- SOLO SELECT sobre {schema}.fact_venta (una sola tabla, sin JOINs)
+- SIEMPRE filtra por customer_id = '{CUSTOMER_ID_PLACEHOLDER}'
+- PROHIBIDO: JOIN gold.dim_time_sales, gold.dim_time, id_tiempo u otras tablas
+- FECHAS: usa SOLO columnas de fact_venta:
+  - invoice_date (preferir para ventas por mes/año/rango)
+  - load_ts::date solo si la pregunta es por fecha de carga del ETL
+- Mes y año (ej. junio 2026):
+  EXTRACT(YEAR FROM invoice_date) = 2026 AND EXTRACT(MONTH FROM invoice_date) = 6
+  O invoice_date >= DATE '2026-06-01' AND invoice_date < DATE '2026-07-01'
+- Rango: invoice_date BETWEEN DATE 'YYYY-MM-DD' AND DATE 'YYYY-MM-DD'
+- NO uses SELECT * salvo que la pregunta pida detalle completo; preferir SUM(total), COUNT, etc. si agrega
+- máximo 50 filas
+
+PREGUNTA:
+{question}
+
+Devuelve SOLO SQL.
+"""
     else:
         prompt = f"""
 Eres un experto en SQL PostgreSQL financiero.
@@ -237,8 +268,9 @@ REGLAS:
   aplica filtro temporal según la sección FILTRADO POR FECHAS Y PERIODOS del contexto.
   fact_bdp: source_date O JOIN gold.dim_time t ON t.id_time = {schema}.fact_bdp.id_tiempo
   (id_tiempo SOLO existe en fact_bdp, nunca en fact_venta).
-  fact_venta: invoice_date (fecha de factura) O JOIN gold.dim_time_sales dt ON dt.Date = {schema}.fact_venta.invoice_date
-  (NO uses id_tiempo ni gold.dim_time en fact_venta).
+  fact_venta: SOLO columnas de {schema}.fact_venta — invoice_date (preferir) o load_ts::date.
+  Mes/año: EXTRACT(YEAR FROM invoice_date) y EXTRACT(MONTH FROM invoice_date), o rango DATE 'YYYY-MM-01'.
+  NO JOIN gold.dim_time_sales, gold.dim_time ni otras tablas gold para ventas.
   presupuesto_proyeccion: anio_mes/mes y deleted_at IS NULL.
 - Si la pregunta NO pide filtro temporal, no agregues condiciones de fecha.
 - máximo 50 rows

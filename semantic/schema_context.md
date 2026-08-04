@@ -7,7 +7,7 @@ REGLAS GLOBALES:
   (utilidad, márgenes, ROE, ROA, liquidez, endeudamiento, semáforos, activo/pasivo/patrimonio totales).
 - dim_customers.customer_id es varchar (identificador de negocio), NO confundir con uuid customer_id de hechos.
 - fact_bdp.id_tiempo referencia gold.dim_time(id_time) — SOLO fact_bdp; fact_venta NO tiene id_tiempo.
-- fact_venta.invoice_date referencia calendario vía gold.dim_time_sales.Date.
+- fact_venta: filtrar fechas SOLO con invoice_date o load_ts en silver.fact_venta. NO JOIN a gold.dim_time_sales ni gold.dim_time.
 - presupuesto_proyeccion.anio_mes formato 'YYYY-MM' (CHECK ^\\d{4}-(0[1-9]|1[0-2])$); mes es columna generada (1-12).
 - Tablas test_* son entornos de prueba; preferir tablas productivas salvo que se indique lo contrario.
 
@@ -38,7 +38,7 @@ Por tabla — columna / patrón recomendado:
 | fact_bdp               | source_date (fecha exacta del extracto, YYYY-MM-DD) O JOIN gold.dim_time  |
 | vw_kpis_financiero     | anio (int), anio_mes ('YYYY-MM'), mes_corto; filtrar por nombre_cliente     |
 | presupuesto_proyeccion | anio_mes ('YYYY-MM'), mes (1-12); siempre deleted_at IS NULL               |
-| fact_venta             | invoice_date (fecha factura) O JOIN gold.dim_time_sales; load_ts solo si pregunta por carga |
+| fact_venta             | invoice_date (preferir) o load_ts::date; filtros directos sin JOIN gold              |
 | dim_accounts           | load_ts solo si pregunta por actualización del catálogo                     |
 | dim_customers          | load_ts / metadata_last_updated solo si aplica                              |
 
@@ -65,14 +65,12 @@ presupuesto_proyeccion — ejemplos:
                       AND p.deleted_at IS NULL
                   )
 
-fact_venta — ejemplos:
+fact_venta — ejemplos (SOLO columnas de silver.fact_venta, sin JOIN gold):
 - Rango factura:  WHERE invoice_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
-- Mes/año:        JOIN gold.dim_time_sales dt ON dt.Date = fv.invoice_date
-                  WHERE dt.Anio = 2025 AND dt.Mes = 12
-- Por AnioMes:    JOIN gold.dim_time_sales dt ON dt.Date = fv.invoice_date
-                  WHERE dt.AnioMes = '2025-12'
+- Mes/año:        WHERE EXTRACT(YEAR FROM invoice_date) = 2026 AND EXTRACT(MONTH FROM invoice_date) = 6
+- Mes calendario: WHERE invoice_date >= DATE '2026-06-01' AND invoice_date < DATE '2026-07-01'
 - Rango carga:    WHERE load_ts::date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
-- PROHIBIDO:      JOIN gold.dim_time ... ON ... id_tiempo en fact_venta (no existe esa columna)
+- PROHIBIDO:      JOIN gold.dim_time, gold.dim_time_sales o usar id_tiempo (no existen en fact_venta)
 
 Reglas de filtrado temporal:
 - Si la pregunta NO menciona tiempo, NO agregues filtros de fecha (salvo deleted_at en presupuesto).
@@ -291,7 +289,6 @@ RELACIONES ÚTILES PARA JOINS
 ──────────────────────────────────────────────────────────────────────────────
 - fact_bdp.codigo_cuenta_contable ↔ dim_accounts.id_auxiliar / id_cuenta (mismo customer_id)
 - fact_bdp.id_tiempo ↔ gold.dim_time.id_time (fecha/periodo balance)
-- fact_venta.invoice_date ↔ gold.dim_time_sales.Date (fecha/periodo ventas)
 - presupuesto_proyeccion.cuenta / cuenta_contable ↔ fact_bdp.codigo_cuenta_contable (mismo customer_id + periodo)
 - fact_venta.customer_id = dim_accounts.customer_id = fact_bdp.customer_id = presupuesto_proyeccion.customer_id
 - vw_kpis_financiero.nombre_cliente ↔ app.customers.name (derivado de fact_bdp.customer_id)
