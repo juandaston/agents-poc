@@ -6,12 +6,14 @@ kpi_entity: vw_kpis_financiero
 gold_schema: gold
 
 global_rules:
-  - Filtra SIEMPRE por customer_id en tablas silver (dim_accounts, fact_venta, fact_bdp, presupuesto_proyeccion).
+  - Filtra SIEMPRE por customer_id en tablas silver (dim_accounts, fact_venta, fact_nota_credito, fact_bdp, presupuesto_proyeccion).
   - gold.vw_kpis_financiero NO tiene customer_id; el servidor aplica filtro por nombre_cliente.
   - PREFERIR gold.vw_kpis_financiero para KPIs, ratios, semáforos y estado de resultados agregado.
+  - PREFERIR gold.vw_ventas_netas_mes para ventas netas/brutas mensuales (facturación − notas crédito).
   - dim_customers.customer_id es varchar (id negocio), NO confundir con uuid customer_id de hechos.
   - fact_bdp.id_tiempo referencia gold.dim_time(id_time) — SOLO fact_bdp tiene id_tiempo.
   - fact_venta: filtrar fechas SOLO con columnas de la tabla (invoice_date, load_ts). NO JOIN gold.dim_time_sales ni gold.dim_time.
+  - fact_venta incluye fila fallback cuando la factura no trae ítems (product_name = Sin detalle de ítems).
   - presupuesto_proyeccion.anio_mes formato YYYY-MM; siempre deleted_at IS NULL.
   - Preferir tablas productivas; test_* solo en entornos de prueba.
 
@@ -32,6 +34,19 @@ entities:
       ratios: [razon_corriente, pct_margen_bruto, pct_margen_neto, pct_roe, pct_roa, apalancamiento]
       semaforos: [semaforo_liquidez, semaforo_endeudamiento, semaforo_margen_bruto, semaforo_utilidad_neta]
 
+  vw_ventas_netas_mes:
+    route_key: vw_ventas_netas_mes
+    qualified_name: gold.vw_ventas_netas_mes
+    layer: gold
+    kind: view
+    description: ventas brutas y netas mensuales (facturación − notas crédito)
+    prefer_for: [ventas netas, ventas brutas, facturacion neta, notas credito, devoluciones]
+    customer_filter: customer_id
+    time_columns: [anio_mes]
+    grain: [customer_id, anio_mes]
+    metrics:
+      ventas: [ventas_brutas, notas_credito, ventas_netas]
+
   fact_bdp:
     route_key: fact_bdp
     qualified_pattern: "{schema}.fact_bdp"
@@ -48,10 +63,20 @@ entities:
     qualified_pattern: "{schema}.fact_venta"
     layer: silver
     kind: table
-    description: ventas / líneas de facturación
-    prefer_for: [ventas, facturacion]
+    description: ventas / líneas de facturación (detalle por producto)
+    prefer_for: [ventas por producto, mix, facturacion detallada]
     customer_filter: customer_id
     time_columns: [invoice_date, load_ts]
+
+  fact_nota_credito:
+    route_key: fact_nota_credito
+    qualified_pattern: "{schema}.fact_nota_credito"
+    layer: silver
+    kind: table
+    description: notas crédito (cabecera) para devoluciones
+    prefer_for: [notas credito, devoluciones detalle]
+    customer_filter: customer_id
+    time_columns: [credit_note_date, invoice_date]
 
   presupuesto_proyeccion:
     route_key: presupuesto_proyeccion
@@ -84,8 +109,10 @@ routing:
   intents: [kpis, ventas, balance, presupuesto, clientes, cuentas, mixto]
   router_order:
     - vw_kpis_financiero
+    - vw_ventas_netas_mes
     - fact_bdp
     - fact_venta
+    - fact_nota_credito
     - presupuesto_proyeccion
     - dim_customers
     - dim_accounts
@@ -114,13 +141,28 @@ routing:
     - costo de ventas
     - gastos administrativos
     - estado de resultados
+  ventas_netas_keywords:
+    - ventas netas
+    - venta neta
+    - facturacion neta
+    - facturación neta
+    - netas por mes
+    - neto por mes
+    - devoluciones
+    - notas credito
+    - notas crédito
+    - descontar notas
+    - menos notas credito
   rules:
     - Si la pregunta se responde con KPIs agregados → SOLO vw_kpis_financiero.
+    - Si pregunta ventas netas/brutas mensuales o facturación menos notas crédito → SOLO vw_ventas_netas_mes.
+    - Usa fact_venta solo para detalle por producto/línea o mix de productos.
     - Usa fact_bdp solo para detalle por cuenta o movimientos granulares.
     - Ventas + presupuesto en la misma pregunta → tablas mixtas.
 
 relationships:
   - fact_bdp.codigo_cuenta_contable ↔ dim_accounts.id_auxiliar (mismo customer_id)
   - fact_bdp.id_tiempo ↔ gold.dim_time.id_time
+  - vw_ventas_netas_mes agrega fact_venta (invoice_date) y fact_nota_credito (credit_note_date)
   - presupuesto_proyeccion ↔ fact_bdp por cuenta y periodo (anio_mes / source_date)
   - vw_kpis_financiero.nombre_cliente ↔ app.customers.name

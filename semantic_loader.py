@@ -165,6 +165,24 @@ def build_kpi_question_pattern(catalog: dict[str, Any] | None = None) -> re.Patt
     return re.compile(rf"\b({'|'.join(parts)})\b", re.IGNORECASE)
 
 
+def build_ventas_netas_question_pattern(catalog: dict[str, Any] | None = None) -> re.Pattern[str]:
+    cat = catalog or load_catalog()
+    routing = cat.get("routing") or {}
+    keywords = routing.get("ventas_netas_keywords") or []
+    parts: list[str] = []
+    for kw in keywords:
+        kw = str(kw).strip()
+        if not kw:
+            continue
+        escaped = re.escape(kw)
+        if " " in kw:
+            escaped = escaped.replace(r"\ ", r"\s+")
+        parts.append(escaped)
+    if not parts:
+        parts = [r"ventas\s+netas", r"notas\s+cr[eé]dito"]
+    return re.compile(rf"({'|'.join(parts)})", re.IGNORECASE)
+
+
 def build_router_entities_block(catalog: dict[str, Any] | None = None) -> str:
     cat = catalog or load_catalog()
     routing = cat.get("routing") or {}

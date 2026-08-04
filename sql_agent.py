@@ -22,6 +22,7 @@ from data_privacy import (
 from semantic_loader import (
     build_intents_list,
     build_kpi_question_pattern,
+    build_ventas_netas_question_pattern,
     build_router_entities_block,
     build_routing_rules_block,
     get_kpi_entity_key,
@@ -51,13 +52,36 @@ def _kpi_question_re() -> re.Pattern[str]:
     return build_kpi_question_pattern()
 
 
+def _ventas_netas_question_re() -> re.Pattern[str]:
+    return build_ventas_netas_question_pattern()
+
+
+def _maybe_route_to_ventas_netas(question: str, route: dict) -> dict:
+    """Ventas netas/brutas mensuales → vw_ventas_netas_mes."""
+    view = "vw_ventas_netas_mes"
+    tables = route.get("tables") or []
+    if view in tables:
+        return route
+    if not _ventas_netas_question_re().search(question or ""):
+        return route
+    logger.info("ventas netas keywords detected; overriding route to %s", view)
+    return {
+        **route,
+        "tables": [view],
+        "intent": "ventas",
+        "reason": (route.get("reason") or "") + f" [auto: ventas netas → {view}]",
+    }
+
+
 def _maybe_route_to_kpis(question: str, route: dict) -> dict:
     """Fallback: KPI-style questions should use the pre-aggregated view."""
     kpi_table = _kpi_table()
     tables = route.get("tables") or []
     if kpi_table in tables:
         return route
-    if any(t in tables for t in ("fact_venta", "presupuesto_proyeccion", "dim_customers")):
+    if any(t in tables for t in ("fact_venta", "fact_nota_credito", "presupuesto_proyeccion", "dim_customers")):
+        return route
+    if _ventas_netas_question_re().search(question or ""):
         return route
     if not _kpi_question_re().search(question or ""):
         return route
@@ -136,7 +160,8 @@ REGLAS DE ENRUTAMIENTO:
 {build_routing_rules_block()}
 - Si implica filtro por fechas, mes, año o periodo, menciónalo en "reason"
   (vw_kpis_financiero → anio / anio_mes; fact_bdp → source_date o gold.dim_time;
-  presupuesto → anio_mes; ventas → load_ts).
+  presupuesto → anio_mes; ventas netas/brutas mensuales → vw_ventas_netas_mes.anio_mes;
+  ventas detalle → fact_venta.invoice_date).
 
 RESPONDE SOLO JSON así:
 
@@ -206,6 +231,36 @@ REGLAS (OBLIGATORIAS):
 - Si la pregunta NO pide filtro temporal, devuelve los periodos más recientes
   (ORDER BY anio DESC, anio_mes DESC LIMIT 12) salvo que pida un total/histórico explícito.
 - Selecciona solo las columnas relevantes para la pregunta (no SELECT * salvo que pida resumen completo)
+- máximo 50 filas
+
+PREGUNTA:
+{question}
+
+Devuelve SOLO SQL.
+"""
+    elif table == "vw_ventas_netas_mes":
+        prompt = f"""
+Eres un experto en SQL PostgreSQL financiero.
+
+{schema_ctx}
+
+VISTA ACTUAL:
+gold.vw_ventas_netas_mes
+
+DESCRIPCIÓN:
+{table_map.get(table, "")}
+
+REGLAS (OBLIGATORIAS):
+- SOLO SELECT sobre gold.vw_ventas_netas_mes (una sola vista, sin JOINs)
+- SIEMPRE filtra por customer_id = '{CUSTOMER_ID_PLACEHOLDER}'
+- Columnas: anio_mes, ventas_brutas, notas_credito, ventas_netas
+- ventas_netas = ventas_brutas − notas_credito (ya calculado en la vista)
+- FECHAS: usa anio_mes ('YYYY-MM')
+  - Mes: WHERE anio_mes = '2026-06'
+  - Año: WHERE anio_mes LIKE '2026-%'
+  - Rango: WHERE anio_mes BETWEEN '2026-01' AND '2026-06'
+- Para evolución mensual: ORDER BY anio_mes
+- NO uses fact_venta ni fact_nota_credito; esta vista ya agrega ambas
 - máximo 50 filas
 
 PREGUNTA:
@@ -344,6 +399,7 @@ def run_financial_query(question: str, customer_id: str, schema: str, customer_t
     safe_question = sanitize_text_for_llm(question, privacy_secrets)
 
     route = route_question(safe_question, agent)
+    route = _maybe_route_to_ventas_netas(safe_question, route)
     route = _maybe_route_to_kpis(safe_question, route)
     route = _prefer_kpi_view(route)
 

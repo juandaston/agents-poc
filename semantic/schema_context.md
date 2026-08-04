@@ -1,13 +1,15 @@
 BASE DE DATOS FINANCIERA (PostgreSQL — schema silver, referencias gold)
 
 REGLAS GLOBALES:
-- Filtra SIEMPRE por customer_id en tablas silver que lo tengan (dim_accounts, fact_venta, fact_bdp, presupuesto_proyeccion).
+- Filtra SIEMPRE por customer_id en tablas silver que lo tengan (dim_accounts, fact_venta, fact_nota_credito, fact_bdp, presupuesto_proyeccion).
 - gold.vw_kpis_financiero NO tiene customer_id; filtra por nombre_cliente (nombre en app.customers).
 - PREFERIR gold.vw_kpis_financiero cuando la pregunta sea de KPIs/ratios/estado de resultados agregado
   (utilidad, márgenes, ROE, ROA, liquidez, endeudamiento, semáforos, activo/pasivo/patrimonio totales).
+- PREFERIR gold.vw_ventas_netas_mes para ventas netas/brutas mensuales (facturación − notas crédito).
 - dim_customers.customer_id es varchar (identificador de negocio), NO confundir con uuid customer_id de hechos.
 - fact_bdp.id_tiempo referencia gold.dim_time(id_time) — SOLO fact_bdp; fact_venta NO tiene id_tiempo.
 - fact_venta: filtrar fechas SOLO con invoice_date o load_ts en silver.fact_venta. NO JOIN a gold.dim_time_sales ni gold.dim_time.
+- fact_venta incluye fila fallback cuando la factura no trae ítems (product_name = Sin detalle de ítems).
 - presupuesto_proyeccion.anio_mes formato 'YYYY-MM' (CHECK ^\\d{4}-(0[1-9]|1[0-2])$); mes es columna generada (1-12).
 - Tablas test_* son entornos de prueba; preferir tablas productivas salvo que se indique lo contrario.
 
@@ -38,7 +40,9 @@ Por tabla — columna / patrón recomendado:
 | fact_bdp               | source_date (fecha exacta del extracto, YYYY-MM-DD) O JOIN gold.dim_time  |
 | vw_kpis_financiero     | anio (int), anio_mes ('YYYY-MM'), mes_corto; filtrar por nombre_cliente     |
 | presupuesto_proyeccion | anio_mes ('YYYY-MM'), mes (1-12); siempre deleted_at IS NULL               |
-| fact_venta             | invoice_date (preferir) o load_ts::date; filtros directos sin JOIN gold              |
+| vw_ventas_netas_mes    | anio_mes ('YYYY-MM'); ventas_brutas, notas_credito, ventas_netas           |
+| fact_venta             | invoice_date (preferir) o load_ts::date; detalle por línea/producto          |
+| fact_nota_credito      | credit_note_date (preferir) o invoice_date; cabecera de notas crédito        |
 | dim_accounts           | load_ts solo si pregunta por actualización del catálogo                     |
 | dim_customers          | load_ts / metadata_last_updated solo si aplica                              |
 
@@ -71,6 +75,13 @@ fact_venta — ejemplos (SOLO columnas de silver.fact_venta, sin JOIN gold):
 - Mes calendario: WHERE invoice_date >= DATE '2026-06-01' AND invoice_date < DATE '2026-07-01'
 - Rango carga:    WHERE load_ts::date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
 - PROHIBIDO:      JOIN gold.dim_time, gold.dim_time_sales o usar id_tiempo (no existen en fact_venta)
+
+vw_ventas_netas_mes — ejemplos (PREFERIR para ventas netas/brutas mensuales):
+- Mes:            WHERE anio_mes = '2026-06'
+- Año:            WHERE anio_mes LIKE '2026-%'
+- Rango meses:    WHERE anio_mes BETWEEN '2026-01' AND '2026-06'
+- Columnas:       ventas_brutas (SUM fact_venta), notas_credito (SUM NC), ventas_netas = bruto − NC
+- NO usar fact_venta para ventas netas si esta vista responde la pregunta
 
 Reglas de filtrado temporal:
 - Si la pregunta NO menciona tiempo, NO agregues filtros de fecha (salvo deleted_at en presupuesto).
@@ -157,6 +168,34 @@ Columnas:
 - idx_fact_venta_integration_id ON (integration_id)
 
 Uso: ventas por factura, producto, totales; agregaciones SUM(total), SUM(quantity).
+Facturas sin ítems en Siigo generan una fila con product_name = (Sin detalle de ítems).
+
+──────────────────────────────────────────────────────────────────────────────
+3b. silver.fact_nota_credito — notas crédito (cabecera)
+──────────────────────────────────────────────────────────────────────────────
+PK: id (serial4)
+
+Columnas:
+- customer_id         uuid — filtrar consultas
+- credit_note_id      varchar(50)
+- credit_note_date    date — preferir para agregaciones mensuales
+- invoice_date        date — fecha factura origen (referencia)
+- total               numeric(15,2)
+- reason, credit_note_name, document_id, customer_id_sale
+
+Uso: devoluciones; agregada en gold.vw_ventas_netas_mes como notas_credito.
+
+──────────────────────────────────────────────────────────────────────────────
+3c. gold.vw_ventas_netas_mes — ventas brutas/netas por mes
+──────────────────────────────────────────────────────────────────────────────
+Grain: customer_id + anio_mes ('YYYY-MM')
+
+Columnas:
+- ventas_brutas   numeric — SUM fact_venta.total por invoice_date
+- notas_credito   numeric — SUM fact_nota_credito.total por credit_note_date
+- ventas_netas    numeric — ventas_brutas − notas_credito
+
+Filtro: customer_id = uuid del tenant.
 
 ──────────────────────────────────────────────────────────────────────────────
 4. silver.presupuesto_proyeccion — presupuesto / proyección mensual por cuenta
