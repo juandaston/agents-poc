@@ -11,6 +11,27 @@ logger = logging.getLogger("agents-poc.llm_client")
 
 PROVIDERS = frozenset({"openai", "anthropic"})
 
+# Anthropic retired models -> current API IDs (see platform.claude.com/docs)
+RETIRED_ANTHROPIC_MODELS: dict[str, str] = {
+    "claude-3-5-sonnet-20241022": "claude-sonnet-4-6",
+    "claude-3-5-sonnet-20240620": "claude-sonnet-4-6",
+    "claude-3-7-sonnet-20250219": "claude-sonnet-4-6",
+    "claude-3-5-haiku-20241022": "claude-haiku-4-5",
+    "claude-3-opus-20240229": "claude-opus-4-6",
+    "claude-3-sonnet-20240229": "claude-sonnet-4-6",
+}
+
+
+def resolve_model(model: str | None) -> str:
+    name = (model or "").strip()
+    if not name:
+        return name
+    mapped = RETIRED_ANTHROPIC_MODELS.get(name)
+    if mapped and mapped != name:
+        logger.warning("anthropic model remapped %s -> %s", name, mapped)
+        return mapped
+    return name
+
 
 def infer_provider_from_model(model: str | None) -> str:
     name = (model or "").strip().lower()
@@ -63,7 +84,7 @@ def complete_text(
     model: str | None = None,
 ) -> str:
     provider = resolve_provider(agent)
-    chosen_model = (model or agent.get("model") or "").strip()
+    chosen_model = resolve_model(model or agent.get("model"))
     if not chosen_model:
         raise ValueError("model is required")
 

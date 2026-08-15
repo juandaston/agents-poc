@@ -11,14 +11,15 @@ FRIENDLY_TIMEOUT_ERROR = (
 )
 
 
-def friendly_error_payload() -> dict:
-    """Respuesta JSON con forma de éxito, sin detalles técnicos."""
-    return {
+def friendly_error_payload(*, admin_detail: str | None = None) -> dict:
+    """Respuesta JSON con forma de éxito, sin detalles técnicos al cliente."""
+    payload = {
         "route": None,
         "sources_consulted": [],
         "sql": [],
         "data": [],
-        "answer": None,
+        "answer": admin_detail,
         "customer_answer": FRIENDLY_QUERY_ERROR,
         "query_status": "error",
     }
+    return payload

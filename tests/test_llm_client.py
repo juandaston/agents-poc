@@ -1,10 +1,18 @@
-from llm_client import infer_provider_from_model, resolve_provider
+from llm_client import infer_provider_from_model, resolve_model, resolve_provider
 
 
 def test_infer_provider_from_model():
-    assert infer_provider_from_model("claude-3-5-sonnet-20241022") == "anthropic"
+    assert infer_provider_from_model("claude-sonnet-4-6") == "anthropic"
     assert infer_provider_from_model("gpt-4o") == "openai"
     assert infer_provider_from_model("") == "openai"
+
+
+def test_resolve_model_retired_sonnet():
+    assert resolve_model("claude-3-5-sonnet-20241022") == "claude-sonnet-4-6"
+
+
+def test_resolve_model_current():
+    assert resolve_model("claude-sonnet-4-6") == "claude-sonnet-4-6"
 
 
 def test_resolve_provider_explicit():
@@ -18,5 +26,5 @@ def test_resolve_provider_from_config():
 
 
 def test_resolve_provider_from_model_prefix():
-    agent = {"model": "claude-3-5-haiku-20241022"}
+    agent = {"model": "claude-haiku-4-5"}
     assert resolve_provider(agent) == "anthropic"

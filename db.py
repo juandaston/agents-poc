@@ -16,24 +16,16 @@ def get_connection():
     )
 
 
-def get_agent(agent_id: str):
-    logger.info("loading agent agent_id=%s", agent_id)
-    started = time.perf_counter()
-
-    conn = get_connection()
-    cur = conn.cursor()
-
-    try:
-        cur.execute(
-            """
+def _agent_select_sql(*, include_provider: bool) -> str:
+    provider_col = "provider,\n            " if include_provider else ""
+    return f"""
         SELECT
             id,
             tenant_id,
             customer_id,
             name,
             model,
-            provider,
-            temperature,
+            {provider_col}temperature,
             max_tokens,
             top_p,
             frequency_penalty,
@@ -45,18 +37,39 @@ def get_agent(agent_id: str):
         WHERE id = %s
           AND is_active = true
           AND deleted_at IS NULL
-    """,
-            (agent_id,),
-        )
+    """
 
-        row = cur.fetchone()
 
-        if not row:
+def _load_agent_row(cur, agent_id: str, *, include_provider: bool) -> dict | None:
+    cur.execute(_agent_select_sql(include_provider=include_provider), (agent_id,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    columns = [desc[0] for desc in cur.description]
+    return dict(zip(columns, row))
+
+
+def get_agent(agent_id: str):
+    logger.info("loading agent agent_id=%s", agent_id)
+    started = time.perf_counter()
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        agent = None
+        try:
+            agent = _load_agent_row(cur, agent_id, include_provider=True)
+        except psycopg2.errors.UndefinedColumn:
+            conn.rollback()
+            logger.warning(
+                "app.agents.provider column missing; infer provider from model/config"
+            )
+            agent = _load_agent_row(cur, agent_id, include_provider=False)
+
+        if not agent:
             logger.warning("agent not found agent_id=%s", agent_id)
             raise Exception("Agent not found")
-
-        columns = [desc[0] for desc in cur.description]
-        agent = dict(zip(columns, row))
 
         for field in [
             "temperature",
