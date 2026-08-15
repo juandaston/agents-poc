@@ -32,6 +32,7 @@ def get_agent(agent_id: str):
             customer_id,
             name,
             model,
+            provider,
             temperature,
             max_tokens,
             top_p,
@@ -68,10 +69,11 @@ def get_agent(agent_id: str):
 
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         logger.info(
-            "agent loaded agent_id=%s name=%r model=%s schema_name=%s elapsed_ms=%s",
+            "agent loaded agent_id=%s name=%r model=%s provider=%s schema_name=%s elapsed_ms=%s",
             agent_id,
             agent.get("name"),
             agent.get("model"),
+            agent.get("provider"),
             agent.get("schema_name"),
             elapsed_ms,
         )

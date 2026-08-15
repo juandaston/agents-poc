@@ -1,12 +1,11 @@
 import re
-import os
 import json
 import logging
 import time
-from openai import OpenAI
 from utils import has_real_data
 from db import run_sql, get_agent, get_customer_name
 from security import validate_sql
+from llm_client import complete_text
 from data_privacy import (
     CUSTOMER_ID_PLACEHOLDER,
     LLM_SAFETY_INSTRUCTION,
@@ -33,7 +32,6 @@ from semantic_loader import (
 )
 
 logger = logging.getLogger("agents-poc.sql_agent")
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 def _schema_context() -> str:
@@ -107,12 +105,9 @@ def _prefer_kpi_view(route: dict) -> dict:
 def generate_customer_answer(question, results, agent):
     logger.info("generating customer answer model=%s", agent.get("model"))
     started = time.perf_counter()
-    response = client.responses.create(
-        model=agent["model"],
-        temperature=agent["temperature"],
-        top_p=agent["top_p"],
-        max_output_tokens=agent["max_tokens"],
-        input=f"""
+    text = complete_text(
+        agent,
+        f"""
 Eres un asistente financiero para clientes NO técnicos.
 
 Tu tarea:
@@ -129,10 +124,8 @@ RESULTADOS (sin datos identificables):
 {results}
 
 RESPONDE SOLO el mensaje final al cliente.
-"""
+""",
     )
-
-    text = response.output_text.strip()
     logger.info(
         "customer answer ready elapsed_ms=%s chars=%s",
         int((time.perf_counter() - started) * 1000),
@@ -144,12 +137,9 @@ def route_question(question: str, agent: dict):
 
     logger.info("routing question model=%s", agent.get("model"))
     started = time.perf_counter()
-    response = client.responses.create(
-        model=agent["model"],
-        temperature=agent["temperature"],
-        top_p=agent["top_p"],
-        max_output_tokens=agent["max_tokens"],
-        input=f"""
+    text = complete_text(
+        agent,
+        f"""
 Eres un router de consultas financieras.
 
 Tablas / vistas disponibles:
@@ -173,10 +163,8 @@ RESPONDE SOLO JSON así:
 
 Pregunta:
 {question}
-"""
+""",
     )
-
-    text = response.output_text
 
     # limpiar posibles ```json
     text = text.replace("```json", "").replace("```", "").strip()
@@ -337,15 +325,9 @@ PREGUNTA:
 Devuelve SOLO SQL.
 """
 
-    response = client.responses.create(
-        model=agent["model"],
-        temperature=agent["temperature"],
-        top_p=agent["top_p"],
-        max_output_tokens=agent["max_tokens"],
-        input=prompt,
-    )
+    response_text = complete_text(agent, prompt)
     
-    sql = response.output_text.strip()
+    sql = response_text.strip()
     logger.info("sql llm raw response table=%s len=%s", table, len(sql))
     logger.debug("sql llm raw response table=%s:\n%s", table, sql)
 
@@ -452,7 +434,7 @@ def run_financial_query(question: str, customer_id: str, schema: str, customer_t
 
     if customer_type == "ADMIN":
         logger.info("generating admin explanation")
-        final_answer = explain_results(safe_question, safe_sql_list, llm_results)
+        final_answer = explain_results(safe_question, safe_sql_list, llm_results, agent)
     
     logger.info("generating customer-facing answer")
     customer_answer = generate_customer_answer(safe_question, llm_results, agent)
@@ -474,13 +456,17 @@ def run_financial_query(question: str, customer_id: str, schema: str, customer_t
         "customer_answer": customer_answer
     }
 
-def explain_results(question, sql_list, results):
+def explain_results(question, sql_list, results, agent):
 
     logger.info("explain_results sql_count=%s", len(sql_list))
     started = time.perf_counter()
-    response = client.responses.create(
-        model="gpt-4.1-mini",
-        input=f"""
+    admin_model = None
+    config = agent.get("config") or {}
+    if isinstance(config, dict):
+        admin_model = config.get("admin_model")
+    text = complete_text(
+        agent,
+        f"""
 Eres un analista financiero senior.
 {LLM_SAFETY_INSTRUCTION}
 
@@ -497,10 +483,9 @@ Explica de forma clara:
 - qué pasó
 - insights
 - anomalías si existen
-"""
+""",
+        model=admin_model or agent.get("model"),
     )
-
-    text = response.output_text
     logger.info(
         "admin explanation ready elapsed_ms=%s chars=%s",
         int((time.perf_counter() - started) * 1000),
