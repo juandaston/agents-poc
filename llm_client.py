@@ -77,6 +77,13 @@ def _anthropic_client():
     return anthropic.Anthropic(api_key=api_key)
 
 
+def _anthropic_sampling_kwargs(temperature: float, top_p: float) -> dict[str, float]:
+    """Newer Claude models accept temperature OR top_p, not both."""
+    if top_p < 1.0:
+        return {"top_p": top_p}
+    return {"temperature": temperature}
+
+
 def complete_text(
     agent: dict[str, Any],
     prompt: str,
@@ -101,12 +108,12 @@ def complete_text(
 
     if provider == "anthropic":
         client = _anthropic_client()
+        sampling = _anthropic_sampling_kwargs(temperature, top_p)
         response = client.messages.create(
             model=chosen_model,
             max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
             messages=[{"role": "user", "content": prompt}],
+            **sampling,
         )
         parts = []
         for block in response.content:

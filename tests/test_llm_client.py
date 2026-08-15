@@ -1,4 +1,9 @@
-from llm_client import infer_provider_from_model, resolve_model, resolve_provider
+from llm_client import (
+    _anthropic_sampling_kwargs,
+    infer_provider_from_model,
+    resolve_model,
+    resolve_provider,
+)
 
 
 def test_infer_provider_from_model():
@@ -28,3 +33,11 @@ def test_resolve_provider_from_config():
 def test_resolve_provider_from_model_prefix():
     agent = {"model": "claude-haiku-4-5"}
     assert resolve_provider(agent) == "anthropic"
+
+
+def test_anthropic_sampling_prefers_temperature_by_default():
+    assert _anthropic_sampling_kwargs(0.7, 1.0) == {"temperature": 0.7}
+
+
+def test_anthropic_sampling_uses_top_p_when_tuned():
+    assert _anthropic_sampling_kwargs(0.7, 0.9) == {"top_p": 0.9}
