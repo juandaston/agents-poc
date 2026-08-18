@@ -10,6 +10,7 @@ from typing import Any
 logger = logging.getLogger("agents-poc.llm_client")
 
 PROVIDERS = frozenset({"openai", "anthropic"})
+DEFAULT_FAST_OPENAI_MODEL = "gpt-4o-mini"
 
 # Anthropic retired models -> current API IDs (see platform.claude.com/docs)
 RETIRED_ANTHROPIC_MODELS: dict[str, str] = {
@@ -59,6 +60,29 @@ def resolve_provider(agent: dict[str, Any]) -> str:
     return infer_provider_from_model(agent.get("model"))
 
 
+def _parse_agent_config(agent: dict[str, Any]) -> dict[str, Any]:
+    config = agent.get("config") or {}
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except json.JSONDecodeError:
+            config = {}
+    return config if isinstance(config, dict) else {}
+
+
+def resolve_fast_model(agent: dict[str, Any]) -> str:
+    """Fast/cheap model for routing and SQL generation (default gpt-4o-mini)."""
+    config = _parse_agent_config(agent)
+    for key in ("fast_model", "route_model", "sql_model"):
+        candidate = (config.get(key) or "").strip()
+        if candidate:
+            return resolve_model(candidate)
+    env_model = (os.getenv("FAST_LLM_MODEL") or "").strip()
+    if env_model:
+        return resolve_model(env_model)
+    return DEFAULT_FAST_OPENAI_MODEL
+
+
 def _openai_client():
     from openai import OpenAI
 
@@ -91,14 +115,19 @@ def complete_text(
     model: str | None = None,
     max_tokens: int | None = None,
     timeout_sec: float | None = None,
+    temperature: float | None = None,
+    top_p: float | None = None,
 ) -> str:
-    provider = resolve_provider(agent)
     chosen_model = resolve_model(model or agent.get("model"))
     if not chosen_model:
         raise ValueError("model is required")
+    if model:
+        provider = infer_provider_from_model(chosen_model)
+    else:
+        provider = resolve_provider(agent)
 
-    temperature = float(agent.get("temperature", 0.7))
-    top_p = float(agent.get("top_p", 1.0))
+    temp = float(temperature if temperature is not None else agent.get("temperature", 0.7))
+    tp = float(top_p if top_p is not None else agent.get("top_p", 1.0))
     out_tokens = int(max_tokens if max_tokens is not None else agent.get("max_tokens", 4096))
     request_timeout = float(timeout_sec if timeout_sec is not None else 20.0)
 
@@ -113,7 +142,7 @@ def complete_text(
 
     if provider == "anthropic":
         client = _anthropic_client()
-        sampling = _anthropic_sampling_kwargs(temperature, top_p)
+        sampling = _anthropic_sampling_kwargs(temp, tp)
         response = client.messages.create(
             model=chosen_model,
             max_tokens=out_tokens,
@@ -133,8 +162,8 @@ def complete_text(
     client = _openai_client()
     response = client.with_options(timeout=request_timeout).responses.create(
         model=chosen_model,
-        temperature=temperature,
-        top_p=top_p,
+        temperature=temp,
+        top_p=tp,
         max_output_tokens=out_tokens,
         input=prompt,
     )

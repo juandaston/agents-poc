@@ -154,6 +154,29 @@ routing:
     - notas crédito
     - descontar notas
     - menos notas credito
+  balance_keywords:
+    - balance de prueba
+    - balance general
+    - saldo final
+    - saldos finales
+    - movimientos contables
+    - movimiento contable
+    - detalle contable
+    - mayor contable
+    - fact_bdp
+  presupuesto_keywords:
+    - presupuesto
+    - proyeccion
+    - proyección
+    - presupuestado
+  ventas_detalle_keywords:
+    - por producto
+    - mix de productos
+    - facturacion detallada
+    - facturación detallada
+    - linea de factura
+    - línea de factura
+    - detalle de ventas
   rules:
     - Si la pregunta se responde con KPIs agregados → SOLO vw_kpis_financiero.
     - Si pregunta ventas netas/brutas mensuales o facturación menos notas crédito → SOLO vw_ventas_netas_mes.

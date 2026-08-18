@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from utils import has_real_data
 from db import run_sql, get_agent, get_customer_name
 from security import validate_sql
-from llm_client import complete_text
+from llm_client import complete_text, resolve_fast_model
 from data_privacy import (
     CUSTOMER_ID_PLACEHOLDER,
     LLM_SAFETY_INSTRUCTION,
@@ -31,6 +31,7 @@ from semantic_loader import (
     load_schema_context_text,
     qualified_source,
     qualified_sources,
+    try_heuristic_route,
 )
 
 logger = logging.getLogger("agents-poc.sql_agent")
@@ -104,6 +105,10 @@ def _prefer_kpi_view(route: dict) -> dict:
     return route
 
 
+def _fast_model(agent: dict) -> str:
+    return resolve_fast_model(agent)
+
+
 def generate_customer_answer(question, results, agent):
     logger.info("generating customer answer model=%s", agent.get("model"))
     started = time.perf_counter()
@@ -119,13 +124,29 @@ def generate_customer_answer(question, results, agent):
     return text
 
 def route_question(question: str, agent: dict):
+    heuristic = try_heuristic_route(question)
+    if heuristic:
+        logger.info(
+            "heuristic route intent=%s tables=%s reason=%s",
+            heuristic.get("intent"),
+            heuristic.get("tables"),
+            heuristic.get("reason"),
+        )
+        return heuristic
 
-    logger.info("routing question model=%s", agent.get("model"))
+    fast_model = _fast_model(agent)
+    logger.info(
+        "routing question fast_model=%s agent_model=%s",
+        fast_model,
+        agent.get("model"),
+    )
     started = time.perf_counter()
     text = complete_text(
         agent,
         f"""
 Eres un router de consultas financieras.
+
+Tablas / vistas disponibles:
 
 {build_router_entities_block()}
 
@@ -147,8 +168,10 @@ RESPONDE SOLO JSON así:
 Pregunta:
 {question}
 """,
+        model=fast_model,
         max_tokens=400,
-        timeout_sec=18,
+        timeout_sec=15,
+        temperature=0,
     )
 
     # limpiar posibles ```json
@@ -170,10 +193,12 @@ Pregunta:
 def generate_sql(question, table, customer_id, schema, agent):
 
     source = qualified_source(table, schema)
+    fast_model = _fast_model(agent)
     logger.info(
-        "generating sql source=%s route_table=%s model=%s",
+        "generating sql source=%s route_table=%s fast_model=%s agent_model=%s",
         source,
         table,
+        fast_model,
         agent.get("model"),
     )
     started = time.perf_counter()
@@ -310,7 +335,14 @@ PREGUNTA:
 Devuelve SOLO SQL.
 """
 
-    response_text = complete_text(agent, prompt, max_tokens=1200, timeout_sec=20)
+    response_text = complete_text(
+        agent,
+        prompt,
+        model=fast_model,
+        max_tokens=1200,
+        timeout_sec=18,
+        temperature=0,
+    )
     
     sql = response_text.strip()
     logger.info("sql llm raw response table=%s len=%s", table, len(sql))

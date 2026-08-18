@@ -183,6 +183,94 @@ def build_ventas_netas_question_pattern(catalog: dict[str, Any] | None = None) -
     return re.compile(rf"({'|'.join(parts)})", re.IGNORECASE)
 
 
+def _keywords_to_pattern(keywords: list[str], *, word_boundary: bool = False) -> re.Pattern[str]:
+    parts: list[str] = []
+    for kw in keywords:
+        kw = str(kw).strip()
+        if not kw:
+            continue
+        escaped = re.escape(kw)
+        if " " in kw:
+            escaped = escaped.replace(r"\ ", r"\s+")
+        parts.append(escaped)
+    if not parts:
+        return re.compile(r"a^")
+    body = "|".join(parts)
+    if word_boundary:
+        return re.compile(rf"\b({body})\b", re.IGNORECASE)
+    return re.compile(rf"({body})", re.IGNORECASE)
+
+
+def build_balance_question_pattern(catalog: dict[str, Any] | None = None) -> re.Pattern[str]:
+    cat = catalog or load_catalog()
+    routing = cat.get("routing") or {}
+    keywords = routing.get("balance_keywords") or [
+        "balance de prueba",
+        "saldo final",
+        "movimientos contables",
+    ]
+    return _keywords_to_pattern(keywords)
+
+
+def build_presupuesto_question_pattern(catalog: dict[str, Any] | None = None) -> re.Pattern[str]:
+    cat = catalog or load_catalog()
+    routing = cat.get("routing") or {}
+    keywords = routing.get("presupuesto_keywords") or ["presupuesto", "proyeccion", "proyección"]
+    return _keywords_to_pattern(keywords, word_boundary=True)
+
+
+def build_ventas_detalle_question_pattern(catalog: dict[str, Any] | None = None) -> re.Pattern[str]:
+    cat = catalog or load_catalog()
+    routing = cat.get("routing") or {}
+    keywords = routing.get("ventas_detalle_keywords") or [
+        "por producto",
+        "mix de productos",
+        "detalle de ventas",
+    ]
+    return _keywords_to_pattern(keywords)
+
+
+def try_heuristic_route(question: str, catalog: dict[str, Any] | None = None) -> dict[str, str | list[str]] | None:
+    """Keyword routing without LLM for common intents."""
+    q = (question or "").strip()
+    if not q:
+        return None
+
+    kpi_table = get_kpi_entity_key(catalog)
+
+    if build_ventas_netas_question_pattern(catalog).search(q):
+        return {
+            "intent": "ventas",
+            "tables": ["vw_ventas_netas_mes"],
+            "reason": "heuristic: ventas netas / notas crédito",
+        }
+    if build_kpi_question_pattern(catalog).search(q):
+        return {
+            "intent": "kpis",
+            "tables": [kpi_table],
+            "reason": "heuristic: KPI / resultados agregados",
+        }
+    if build_balance_question_pattern(catalog).search(q):
+        return {
+            "intent": "balance",
+            "tables": ["fact_bdp"],
+            "reason": "heuristic: balance / movimientos contables",
+        }
+    if build_presupuesto_question_pattern(catalog).search(q):
+        return {
+            "intent": "presupuesto",
+            "tables": ["presupuesto_proyeccion"],
+            "reason": "heuristic: presupuesto / proyección",
+        }
+    if build_ventas_detalle_question_pattern(catalog).search(q):
+        return {
+            "intent": "ventas",
+            "tables": ["fact_venta"],
+            "reason": "heuristic: ventas detalle / producto",
+        }
+    return None
+
+
 def build_router_entities_block(catalog: dict[str, Any] | None = None) -> str:
     cat = catalog or load_catalog()
     routing = cat.get("routing") or {}

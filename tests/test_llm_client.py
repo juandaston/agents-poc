@@ -1,6 +1,7 @@
 from llm_client import (
     _anthropic_sampling_kwargs,
     infer_provider_from_model,
+    resolve_fast_model,
     resolve_model,
     resolve_provider,
 )
@@ -41,3 +42,8 @@ def test_anthropic_sampling_prefers_temperature_by_default():
 
 def test_anthropic_sampling_uses_top_p_when_tuned():
     assert _anthropic_sampling_kwargs(0.7, 0.9) == {"top_p": 0.9}
+
+
+def test_resolve_fast_model_uses_env(monkeypatch):
+    monkeypatch.setenv("FAST_LLM_MODEL", "gpt-4o-mini")
+    assert resolve_fast_model({"model": "claude-sonnet-4-6"}) == "gpt-4o-mini"
