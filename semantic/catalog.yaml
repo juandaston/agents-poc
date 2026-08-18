@@ -20,6 +20,7 @@ global_rules:
   - EXTRACT filtra Siigo por created_start/created_end (creación del documento); SILVER/ANALYTICS usan invoice_date / credit_note_date (elaboración). No mezclar criterios en comparaciones mensuales.
   - presupuesto_proyeccion.anio_mes formato YYYY-MM; siempre deleted_at IS NULL.
   - Preferir tablas productivas; test_* solo en entornos de prueba.
+  - Consultar SIEMPRE primero la vista gold enrutada; si no hay filas, reintentar con silver_fallback del catálogo.
 
 entities:
   vw_kpis_financiero:
@@ -32,6 +33,7 @@ entities:
     customer_filter: customer_id
     time_columns: [anio, anio_mes, mes_corto]
     grain: [customer_id, anio_mes]
+    silver_fallback: [fact_bdp]
     metrics:
       balance: [activo_corriente, activo_no_corriente, activo_total, pasivo_corriente, pasivo_no_corriente, pasivo_total, patrimonio_total]
       resultados: [ingresos_operacionales, costo_ventas_total, utilidad_bruta, utilidad_operacional, utilidad_neta]
@@ -48,10 +50,8 @@ entities:
     customer_filter: customer_id
     time_columns: [anio_mes]
     grain: [customer_id, anio_mes]
+    silver_fallback: [fact_venta, fact_nota_credito]
     metrics:
-      ventas: [ventas_brutas, notas_credito, ventas_netas]
-
-  vw_ventas_por_producto_mes:
     route_key: vw_ventas_por_producto_mes
     qualified_name: gold.vw_ventas_por_producto_mes
     layer: gold
@@ -61,10 +61,8 @@ entities:
     customer_filter: customer_id
     time_columns: [anio_mes]
     grain: [customer_id, anio_mes, product_name]
+    silver_fallback: [fact_venta]
     metrics:
-      ventas: [total_ventas, cantidad, num_facturas]
-
-  vw_presupuesto_vs_real_mes:
     route_key: vw_presupuesto_vs_real_mes
     qualified_name: gold.vw_presupuesto_vs_real_mes
     layer: gold
@@ -74,10 +72,8 @@ entities:
     customer_filter: customer_id
     time_columns: [anio_mes]
     grain: [customer_id, anio_mes, cuenta_contable]
+    silver_fallback: [presupuesto_proyeccion, fact_bdp]
     metrics:
-      presupuesto: [presupuesto, real_saldo, variacion, pct_cumplimiento]
-
-  vw_semaforos_cliente:
     route_key: vw_semaforos_cliente
     qualified_name: gold.vw_semaforos_cliente
     layer: gold
@@ -87,10 +83,8 @@ entities:
     customer_filter: customer_id
     time_columns: [anio_mes]
     grain: [customer_id]
+    silver_fallback: [fact_bdp]
     metrics:
-      semaforos: [semaforo_liquidez, semaforo_endeudamiento, semaforo_margen_bruto, semaforo_utilidad_neta]
-
-  vw_ultimo_periodo_cliente:
     route_key: vw_ultimo_periodo_cliente
     qualified_name: gold.vw_ultimo_periodo_cliente
     layer: gold
@@ -100,6 +94,7 @@ entities:
     customer_filter: customer_id
     time_columns: [ultimo_anio_mes, ultima_fecha]
     grain: [customer_id, fuente]
+    silver_fallback: [fact_bdp, fact_venta, presupuesto_proyeccion]
 
   fact_bdp:
     route_key: fact_bdp

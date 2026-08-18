@@ -128,6 +128,38 @@ def get_gold_route_keys(catalog: dict[str, Any] | None = None) -> frozenset[str]
     return frozenset(keys)
 
 
+def get_silver_fallbacks(table: str, catalog: dict[str, Any] | None = None) -> list[str]:
+    """Silver tables to try when a gold view returns no rows."""
+    cat = catalog or load_catalog()
+    entities = cat.get("entities") or {}
+    meta = entities.get(table) if isinstance(entities, dict) else None
+    if not isinstance(meta, dict):
+        return []
+    raw = meta.get("silver_fallback") or []
+    if not isinstance(raw, list):
+        return []
+    return [str(t).strip() for t in raw if str(t).strip()]
+
+
+def query_candidates(primary_table: str, catalog: dict[str, Any] | None = None) -> list[str]:
+    """Gold view first, then configured silver fallbacks (deduped, order preserved)."""
+    cat = catalog or load_catalog()
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(name: str) -> None:
+        key = name.strip()
+        if key and key not in seen:
+            seen.add(key)
+            out.append(key)
+
+    add(primary_table)
+    if primary_table in get_gold_route_keys(cat):
+        for fallback in get_silver_fallbacks(primary_table, cat):
+            add(fallback)
+    return out
+
+
 def qualified_source(table: str, schema: str, catalog: dict[str, Any] | None = None) -> str:
     cat = catalog or load_catalog()
     gold = get_gold_schema(cat)

@@ -27,6 +27,7 @@ from semantic_loader import (
     load_schema_context_text,
     qualified_source,
     qualified_sources,
+    query_candidates,
     try_heuristic_route,
 )
 
@@ -467,6 +468,69 @@ Devuelve SOLO SQL.
     logger.debug("sql generated table=%s body=%s", table, validated)
     return validated
 
+
+def _consult_with_silver_fallback(
+    primary_table: str,
+    safe_question: str,
+    customer_id: str,
+    schema: str,
+    agent: dict,
+) -> dict:
+    """
+    Try gold (or primary) first, then silver_fallback from catalog.
+    Returns dict with keys: data (list|None), sql, table, sources, routed_from.
+    """
+    sources_consulted: list[str] = []
+    candidates = query_candidates(primary_table)
+    last_sql = ""
+
+    for idx, table in enumerate(candidates):
+        source = qualified_source(table, schema)
+        is_fallback = idx > 0
+        logger.info(
+            "consulting source=%s table=%s primary=%s fallback=%s",
+            source,
+            table,
+            primary_table,
+            is_fallback,
+        )
+        sql = generate_sql(safe_question, table, customer_id, schema, agent)
+        last_sql = sql
+        data = run_sql(sql, schema, source=source)
+        if source not in sources_consulted:
+            sources_consulted.append(source)
+        if has_real_data(data):
+            if is_fallback:
+                logger.info(
+                    "silver fallback succeeded primary=%s table=%s rows=%s",
+                    primary_table,
+                    table,
+                    len(data),
+                )
+            return {
+                "data": data,
+                "sql": sql,
+                "table": table,
+                "sources": sources_consulted,
+                "routed_from": primary_table if is_fallback else None,
+            }
+        logger.warning(
+            "no real data source=%s table=%s primary=%s fallback=%s",
+            source,
+            table,
+            primary_table,
+            is_fallback,
+        )
+
+    return {
+        "data": None,
+        "sql": last_sql,
+        "table": primary_table,
+        "sources": sources_consulted,
+        "routed_from": None,
+    }
+
+
 def run_financial_query(question: str, customer_id: str, schema: str, customer_type: str, agent_id: str):
 
     pipeline_started = time.perf_counter()
@@ -506,35 +570,42 @@ def run_financial_query(question: str, customer_id: str, schema: str, customer_t
     sources_consulted: list[str] = []
 
     for table in route_tables:
-        source = qualified_source(table, schema)
-        logger.info("consulting source=%s route_table=%s", source, table)
-        sql = generate_sql(safe_question, table, customer_id, schema, agent)
-
-        data = run_sql(sql, schema, source=source)
-        sources_consulted.append(source)
-        if not has_real_data(data):
+        hit = _consult_with_silver_fallback(
+            table, safe_question, customer_id, schema, agent
+        )
+        if hit["data"] is None:
             logger.warning(
-                "no real data source=%s route_table=%s customer_id=%s",
-                source,
+                "no data after gold+silver fallbacks primary=%s customer_id=%s",
                 table,
                 customer_id,
             )
             return {
                 "route": route,
-                "sources_consulted": sources_consulted,
-                "sql": [sql],
+                "sources_consulted": hit["sources"],
+                "sql": [hit["sql"]] if hit.get("sql") else [],
                 "data": [],
                 "answer": None,
                 "customer_answer": "No encontramos información relacionada con tu consulta.",
             }
 
-        all_sql.append(sql)
-        all_results.append({
-            "table": table,
-            "sql": sql,
-            "data": data,
-        })
-        logger.info("consulted source=%s rows=%s", source, len(data))
+        for src in hit["sources"]:
+            if src not in sources_consulted:
+                sources_consulted.append(src)
+        all_sql.append(hit["sql"])
+        block = {
+            "table": hit["table"],
+            "sql": hit["sql"],
+            "data": hit["data"],
+        }
+        if hit.get("routed_from"):
+            block["routed_from"] = hit["routed_from"]
+        all_results.append(block)
+        logger.info(
+            "consulted table=%s rows=%s routed_from=%s",
+            hit["table"],
+            len(hit["data"]),
+            hit.get("routed_from"),
+        )
 
     llm_results = sanitize_results_for_llm(all_results, privacy_secrets)
 
