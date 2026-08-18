@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger("agents-poc.prompt_builder")
+
 BASE_CUSTOMER_ANSWER = """
 Eres un asistente financiero para clientes NO técnicos.
 
@@ -32,6 +36,32 @@ def _extra_block(agent: dict) -> str:
     return f"\n\nINSTRUCCIONES ADICIONALES:\n{text}"
 
 
+def _log_built_prompt(kind: str, agent: dict, prompt: str) -> None:
+    persona_key = (
+        "customer_answer_prompt_body"
+        if kind == "customer_answer"
+        else "admin_explain_prompt_body"
+    )
+    persona = (agent.get(persona_key) or "").strip()
+    extra = (agent.get("system_prompt") or "").strip()
+    logger.info(
+        "prompt assembled kind=%s agent=%r model=%s persona_chars=%s extra_chars=%s total_chars=%s",
+        kind,
+        agent.get("name"),
+        agent.get("model"),
+        len(persona),
+        len(extra),
+        len(prompt),
+    )
+    logger.info(
+        "=== LLM PROMPT (%s) agent_id=%s ===\n%s\n=== END PROMPT (%s) ===",
+        kind,
+        agent.get("id"),
+        prompt,
+        kind,
+    )
+
+
 def build_customer_answer_prompt(
     question: str,
     results,
@@ -54,7 +84,9 @@ RESULTADOS (sin datos identificables):
 RESPONDE SOLO el mensaje final al cliente.
 """.strip(),
     ]
-    return "\n".join(p for p in parts if p)
+    prompt = "\n".join(p for p in parts if p)
+    _log_built_prompt("customer_answer", agent, prompt)
+    return prompt
 
 
 def build_admin_explain_prompt(
@@ -86,4 +118,6 @@ Explica de forma clara:
 - anomalías si existen
 """.strip(),
     ]
-    return "\n".join(p for p in parts if p)
+    prompt = "\n".join(p for p in parts if p)
+    _log_built_prompt("admin_explain", agent, prompt)
+    return prompt

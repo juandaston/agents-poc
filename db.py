@@ -131,13 +131,20 @@ def get_agent(agent_id: str):
                 agent[field] = float(agent[field])
 
         elapsed_ms = int((time.perf_counter() - started) * 1000)
+        customer_body = (agent.get("customer_answer_prompt_body") or "").strip()
+        admin_body = (agent.get("admin_explain_prompt_body") or "").strip()
+        system_prompt = (agent.get("system_prompt") or "").strip()
         logger.info(
-            "agent loaded agent_id=%s name=%r model=%s provider=%s schema_name=%s elapsed_ms=%s",
+            "agent loaded agent_id=%s name=%r model=%s provider=%s schema_name=%s "
+            "customer_prompt_body=%s admin_prompt_body=%s system_prompt=%s elapsed_ms=%s",
             agent_id,
             agent.get("name"),
             agent.get("model"),
             agent.get("provider"),
             agent.get("schema_name"),
+            f"{len(customer_body)} chars" if customer_body else "none",
+            f"{len(admin_body)} chars" if admin_body else "none",
+            f"{len(system_prompt)} chars" if system_prompt else "none",
             elapsed_ms,
         )
         return agent
