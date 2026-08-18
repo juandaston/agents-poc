@@ -11,8 +11,6 @@ from data_privacy import (
     LLM_SAFETY_INSTRUCTION,
     apply_customer_id_placeholder,
     build_privacy_secrets,
-    customer_filter_sql,
-    inject_customer_filter,
     sanitize_results_for_llm,
     sanitize_text_for_llm,
 )
@@ -220,8 +218,8 @@ REGLAS (OBLIGATORIAS):
 - SOLO SELECT
 - Consulta ÚNICAMENTE gold.vw_kpis_financiero (schema gold, nombre completo)
 - NO hagas JOIN con fact_bdp, dim_accounts ni otras tablas; los KPIs ya están calculados
-- NO filtres por cliente ni incluyas nombre_cliente; el servidor aplica el alcance del cliente
-- NO selecciones la columna nombre_cliente
+- SIEMPRE filtra por customer_id = '{CUSTOMER_ID_PLACEHOLDER}'
+- NO selecciones nombre_cliente ni customer_id en el SELECT salvo que la pregunta lo pida explícitamente
 - FECHAS: si la pregunta menciona periodo, mes, año o "último periodo", filtra con
   anio_mes ('YYYY-MM') o anio (int). Para último periodo usa ORDER BY anio DESC, anio_mes DESC LIMIT 1.
 - Si la pregunta NO pide filtro temporal, devuelve los periodos más recientes
@@ -257,6 +255,105 @@ REGLAS (OBLIGATORIAS):
   - Rango: WHERE anio_mes BETWEEN '2026-01' AND '2026-06'
 - Para evolución mensual: ORDER BY anio_mes
 - NO uses fact_venta ni fact_nota_credito; esta vista ya agrega ambas
+- máximo 50 filas
+
+PREGUNTA:
+{question}
+
+Devuelve SOLO SQL.
+"""
+    elif table == "vw_ventas_por_producto_mes":
+        prompt = f"""
+Eres un experto en SQL PostgreSQL financiero.
+
+{schema_ctx}
+
+VISTA ACTUAL:
+gold.vw_ventas_por_producto_mes
+
+DESCRIPCIÓN:
+{table_map.get(table, "")}
+
+REGLAS (OBLIGATORIAS):
+- SOLO SELECT sobre gold.vw_ventas_por_producto_mes (sin JOINs)
+- SIEMPRE filtra por customer_id = '{CUSTOMER_ID_PLACEHOLDER}'
+- Columnas: anio_mes, product_name, product_code, total_ventas, cantidad, num_facturas
+- FECHAS: anio_mes ('YYYY-MM')
+- Para top productos: ORDER BY total_ventas DESC
+- NO uses fact_venta; esta vista ya agrega por producto
+- máximo 50 filas
+
+PREGUNTA:
+{question}
+
+Devuelve SOLO SQL.
+"""
+    elif table == "vw_presupuesto_vs_real_mes":
+        prompt = f"""
+Eres un experto en SQL PostgreSQL financiero.
+
+{schema_ctx}
+
+VISTA ACTUAL:
+gold.vw_presupuesto_vs_real_mes
+
+DESCRIPCIÓN:
+{table_map.get(table, "")}
+
+REGLAS (OBLIGATORIAS):
+- SOLO SELECT sobre gold.vw_presupuesto_vs_real_mes (sin JOINs)
+- SIEMPRE filtra por customer_id = '{CUSTOMER_ID_PLACEHOLDER}'
+- Columnas: anio_mes, cuenta, cuenta_contable, presupuesto, real_saldo, variacion, pct_cumplimiento
+- FECHAS: anio_mes ('YYYY-MM')
+- NO JOIN presupuesto_proyeccion ni fact_bdp manualmente
+- máximo 50 filas
+
+PREGUNTA:
+{question}
+
+Devuelve SOLO SQL.
+"""
+    elif table == "vw_semaforos_cliente":
+        prompt = f"""
+Eres un experto en SQL PostgreSQL financiero.
+
+{schema_ctx}
+
+VISTA ACTUAL:
+gold.vw_semaforos_cliente
+
+DESCRIPCIÓN:
+{table_map.get(table, "")}
+
+REGLAS (OBLIGATORIAS):
+- SOLO SELECT sobre gold.vw_semaforos_cliente (sin JOINs)
+- SIEMPRE filtra por customer_id = '{CUSTOMER_ID_PLACEHOLDER}'
+- Una fila por cliente (último periodo KPI). Columnas de semáforos y ratios.
+- NO uses vw_kpis_financiero si solo pide semáforos actuales
+- máximo 50 filas
+
+PREGUNTA:
+{question}
+
+Devuelve SOLO SQL.
+"""
+    elif table == "vw_ultimo_periodo_cliente":
+        prompt = f"""
+Eres un experto en SQL PostgreSQL financiero.
+
+{schema_ctx}
+
+VISTA ACTUAL:
+gold.vw_ultimo_periodo_cliente
+
+DESCRIPCIÓN:
+{table_map.get(table, "")}
+
+REGLAS (OBLIGATORIAS):
+- SOLO SELECT sobre gold.vw_ultimo_periodo_cliente (sin JOINs)
+- SIEMPRE filtra por customer_id = '{CUSTOMER_ID_PLACEHOLDER}'
+- Columnas: fuente (kpis|ventas|bdp|presupuesto), ultimo_anio_mes, ultima_fecha
+- Opcional: AND fuente = 'kpis' si la pregunta es específica de KPIs
 - máximo 50 filas
 
 PREGUNTA:
@@ -358,11 +455,7 @@ Devuelve SOLO SQL.
 
     sql = match.group(1).strip()
 
-    if table == kpi_table:
-        filter_clause = customer_filter_sql(customer_id, get_customer_name(customer_id))
-        sql = inject_customer_filter(sql, filter_clause)
-    else:
-        sql = apply_customer_id_placeholder(sql, customer_id)
+    sql = apply_customer_id_placeholder(sql, customer_id)
 
     validated = validate_sql(sql)
     logger.info(

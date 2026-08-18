@@ -230,6 +230,36 @@ def build_ventas_detalle_question_pattern(catalog: dict[str, Any] | None = None)
     return _keywords_to_pattern(keywords)
 
 
+def build_presupuesto_vs_real_question_pattern(catalog: dict[str, Any] | None = None) -> re.Pattern[str]:
+    cat = catalog or load_catalog()
+    routing = cat.get("routing") or {}
+    keywords = routing.get("presupuesto_vs_real_keywords") or [
+        "presupuesto vs real",
+        "cumplimiento presupuesto",
+    ]
+    return _keywords_to_pattern(keywords)
+
+
+def build_ultimo_periodo_question_pattern(catalog: dict[str, Any] | None = None) -> re.Pattern[str]:
+    cat = catalog or load_catalog()
+    routing = cat.get("routing") or {}
+    keywords = routing.get("ultimo_periodo_keywords") or [
+        "ultimo periodo",
+        "último periodo",
+    ]
+    return _keywords_to_pattern(keywords)
+
+
+def build_semaforos_actuales_question_pattern(catalog: dict[str, Any] | None = None) -> re.Pattern[str]:
+    cat = catalog or load_catalog()
+    routing = cat.get("routing") or {}
+    keywords = routing.get("semaforos_actuales_keywords") or [
+        "semaforo actual",
+        "semáforo actual",
+    ]
+    return _keywords_to_pattern(keywords)
+
+
 def try_heuristic_route(question: str, catalog: dict[str, Any] | None = None) -> dict[str, str | list[str]] | None:
     """Keyword routing without LLM for common intents."""
     q = (question or "").strip()
@@ -238,6 +268,24 @@ def try_heuristic_route(question: str, catalog: dict[str, Any] | None = None) ->
 
     kpi_table = get_kpi_entity_key(catalog)
 
+    if build_ultimo_periodo_question_pattern(catalog).search(q):
+        return {
+            "intent": "mixto",
+            "tables": ["vw_ultimo_periodo_cliente"],
+            "reason": "heuristic: último periodo / datos disponibles",
+        }
+    if build_semaforos_actuales_question_pattern(catalog).search(q):
+        return {
+            "intent": "kpis",
+            "tables": ["vw_semaforos_cliente"],
+            "reason": "heuristic: semáforos del periodo actual",
+        }
+    if build_presupuesto_vs_real_question_pattern(catalog).search(q):
+        return {
+            "intent": "presupuesto",
+            "tables": ["vw_presupuesto_vs_real_mes"],
+            "reason": "heuristic: presupuesto vs real / cumplimiento",
+        }
     if build_ventas_netas_question_pattern(catalog).search(q):
         return {
             "intent": "ventas",
@@ -265,8 +313,8 @@ def try_heuristic_route(question: str, catalog: dict[str, Any] | None = None) ->
     if build_ventas_detalle_question_pattern(catalog).search(q):
         return {
             "intent": "ventas",
-            "tables": ["fact_venta"],
-            "reason": "heuristic: ventas detalle / producto",
+            "tables": ["vw_ventas_por_producto_mes"],
+            "reason": "heuristic: ventas por producto / mix",
         }
     return None
 

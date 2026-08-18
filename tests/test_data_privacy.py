@@ -1,6 +1,6 @@
 import unittest
 
-from data_privacy import inject_customer_filter
+from data_privacy import apply_customer_id_placeholder, inject_customer_filter
 
 
 class InjectCustomerFilterTests(unittest.TestCase):
@@ -41,6 +41,18 @@ LIMIT 50
         result = inject_customer_filter(sql, "nombre_cliente = 'MESH'")
         self.assertNotIn("LIMIT 50 AND", result)
         self.assertRegex(result, r"WHERE \(nombre_cliente = 'MESH'\)\s+LIMIT 50")
+
+
+class ApplyCustomerIdPlaceholderTests(unittest.TestCase):
+    def test_substitutes_uuid_in_kpi_query(self):
+        sql = (
+            "SELECT pct_margen_bruto, anio_mes FROM gold.vw_kpis_financiero "
+            "WHERE customer_id = '__CUSTOMER_ID__' AND anio = 2025 LIMIT 12"
+        )
+        customer_id = "660e8400-e29b-41d4-a716-446655440000"
+        result = apply_customer_id_placeholder(sql, customer_id)
+        self.assertIn(f"customer_id = '{customer_id}'", result)
+        self.assertNotIn("__CUSTOMER_ID__", result)
 
 
 if __name__ == "__main__":

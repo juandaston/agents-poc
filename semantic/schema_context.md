@@ -1,8 +1,7 @@
 BASE DE DATOS FINANCIERA (PostgreSQL — schema silver, referencias gold)
 
 REGLAS GLOBALES:
-- Filtra SIEMPRE por customer_id en tablas silver que lo tengan (dim_accounts, fact_venta, fact_nota_credito, fact_bdp, presupuesto_proyeccion).
-- gold.vw_kpis_financiero NO tiene customer_id; filtra por nombre_cliente (nombre en app.customers).
+- Filtra SIEMPRE por customer_id en tablas silver y vistas gold (incluye vw_kpis_financiero y vw_ventas_netas_mes).
 - PREFERIR gold.vw_kpis_financiero cuando la pregunta sea de KPIs/ratios/estado de resultados agregado
   (utilidad, márgenes, ROE, ROA, liquidez, endeudamiento, semáforos, activo/pasivo/patrimonio totales).
 - PREFERIR gold.vw_ventas_netas_mes para ventas netas/brutas mensuales (facturación − notas crédito).
@@ -41,9 +40,13 @@ Por tabla — columna / patrón recomendado:
 | Tabla                  | Filtrar por                                                                 |
 |------------------------|-----------------------------------------------------------------------------|
 | fact_bdp               | source_date (fecha exacta del extracto, YYYY-MM-DD) O JOIN gold.dim_time  |
-| vw_kpis_financiero     | anio (int), anio_mes ('YYYY-MM'), mes_corto; filtrar por nombre_cliente     |
+| vw_kpis_financiero     | customer_id (UUID), anio (int), anio_mes ('YYYY-MM'), mes_corto              |
 | presupuesto_proyeccion | anio_mes ('YYYY-MM'), mes (1-12); siempre deleted_at IS NULL               |
 | vw_ventas_netas_mes    | anio_mes ('YYYY-MM'); ventas_brutas, notas_credito, ventas_netas           |
+| vw_ventas_por_producto_mes | customer_id, anio_mes; product_name, total_ventas, cantidad            |
+| vw_presupuesto_vs_real_mes | customer_id, anio_mes; presupuesto, real_saldo, variacion, pct_cumplimiento |
+| vw_semaforos_cliente   | customer_id; semáforos del último anio_mes (una fila por cliente)          |
+| vw_ultimo_periodo_cliente | customer_id, fuente (kpis|ventas|bdp|presupuesto), ultimo_anio_mes       |
 | fact_venta             | invoice_date (preferir) o load_ts::date; detalle por línea/producto          |
 | fact_nota_credito      | credit_note_date (preferir) o invoice_date; cabecera de notas crédito        |
 | dim_accounts           | load_ts solo si pregunta por actualización del catálogo                     |
@@ -268,10 +271,11 @@ Vista en schema gold. Agrega fact_bdp + gold.vw_dim_accounts + gold.dim_time + a
 Una fila por cliente, año y mes (anio_mes). NO requiere JOINs adicionales.
 
 Dimensiones:
+- customer_id       uuid — app.customers.id (filtro de cliente)
 - anio              int — año calendario
 - anio_mes          varchar(7) — 'YYYY-MM'
 - mes_corto         varchar — nombre corto del mes
-- nombre_cliente    varchar — nombre en app.customers (filtro de cliente)
+- nombre_cliente    varchar — nombre en app.customers (atributo; no usar para filtrar)
 
 Balance / estructura patrimonial:
 - activo_corriente, activo_no_corriente, activo_total
@@ -295,9 +299,9 @@ Semáforos (VERDE | AMARILLO | ROJO):
 - semaforo_liquidez, semaforo_endeudamiento, semaforo_margen_bruto, semaforo_utilidad_neta
 
 Filtro de cliente:
-  NO lo incluyas en el SQL; el servidor añade el filtro por nombre_cliente automáticamente.
+  SIEMPRE filtra por customer_id = '<uuid>' (el servidor sustituye el placeholder).
 
-Filtro temporal — ejemplos (solo periodo; sin filtro de cliente):
+Filtro temporal — ejemplos (periodo + customer_id):
 - Mes:        WHERE anio_mes = '2025-03'
 - Año:        WHERE anio = 2025
 - Rango mes:  WHERE anio_mes BETWEEN '2025-01' AND '2025-06'
@@ -306,6 +310,33 @@ Filtro temporal — ejemplos (solo periodo; sin filtro de cliente):
 
 Uso típico: margen bruto, utilidad neta, ROE, ROA, liquidez, endeudamiento, semáforos,
 comparación de periodos, evolución de KPIs. NO usar fact_bdp si esta vista responde la pregunta.
+
+──────────────────────────────────────────────────────────────────────────────
+6b. gold.vw_ventas_por_producto_mes — ventas por producto (PREFERIR para mix/top)
+──────────────────────────────────────────────────────────────────────────────
+Grain: customer_id, anio_mes, product_name, product_code
+Métricas: total_ventas, cantidad, num_facturas
+Filtrar: customer_id = uuid AND anio_mes = 'YYYY-MM'
+NO usar fact_venta si esta vista responde la pregunta.
+
+──────────────────────────────────────────────────────────────────────────────
+6c. gold.vw_presupuesto_vs_real_mes — presupuesto vs real por cuenta
+──────────────────────────────────────────────────────────────────────────────
+Grain: customer_id, anio_mes, cuenta_contable
+Columnas: presupuesto, real_saldo, variacion, pct_cumplimiento
+Filtrar: customer_id + anio_mes. NO JOIN presupuesto con fact_bdp manualmente.
+
+──────────────────────────────────────────────────────────────────────────────
+6d. gold.vw_semaforos_cliente — semáforos del último mes KPI
+──────────────────────────────────────────────────────────────────────────────
+Una fila por customer_id (periodo más reciente en vw_kpis_financiero).
+Columnas: semaforo_liquidez, semaforo_endeudamiento, semaforo_margen_bruto, semaforo_utilidad_neta, ratios.
+
+──────────────────────────────────────────────────────────────────────────────
+6e. gold.vw_ultimo_periodo_cliente — último periodo con datos
+──────────────────────────────────────────────────────────────────────────────
+Columnas: customer_id, fuente (kpis|ventas|bdp|presupuesto), ultimo_anio_mes, ultima_fecha
+Filtrar por customer_id. Opcional fuente = 'kpis' etc.
 
 ──────────────────────────────────────────────────────────────────────────────
 7. silver.test_dim_accounts — plan de cuentas (PRUEBAS, sin customer_id)
@@ -333,4 +364,4 @@ RELACIONES ÚTILES PARA JOINS
 - fact_bdp.id_tiempo ↔ gold.dim_time.id_time (fecha/periodo balance)
 - presupuesto_proyeccion.cuenta / cuenta_contable ↔ fact_bdp.codigo_cuenta_contable (mismo customer_id + periodo)
 - fact_venta.customer_id = dim_accounts.customer_id = fact_bdp.customer_id = presupuesto_proyeccion.customer_id
-- vw_kpis_financiero.nombre_cliente ↔ app.customers.name (derivado de fact_bdp.customer_id)
+- vw_kpis_financiero.customer_id ↔ app.customers.id (join desde nombre_cliente en la vista base)

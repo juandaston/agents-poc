@@ -6,10 +6,13 @@ kpi_entity: vw_kpis_financiero
 gold_schema: gold
 
 global_rules:
-  - Filtra SIEMPRE por customer_id en tablas silver (dim_accounts, fact_venta, fact_nota_credito, fact_bdp, presupuesto_proyeccion).
-  - gold.vw_kpis_financiero NO tiene customer_id; el servidor aplica filtro por nombre_cliente.
+  - Filtra SIEMPRE por customer_id en tablas silver y vistas gold (incluye vw_kpis_financiero y vw_ventas_netas_mes).
   - PREFERIR gold.vw_kpis_financiero para KPIs, ratios, semáforos y estado de resultados agregado.
   - PREFERIR gold.vw_ventas_netas_mes para ventas netas/brutas mensuales (facturación − notas crédito).
+  - PREFERIR gold.vw_ventas_por_producto_mes para mix, top productos y ventas por producto.
+  - PREFERIR gold.vw_presupuesto_vs_real_mes para presupuesto vs real, cumplimiento y variación.
+  - PREFERIR gold.vw_semaforos_cliente para semáforos del periodo más reciente.
+  - PREFERIR gold.vw_ultimo_periodo_cliente para saber el último mes/fecha con datos.
   - dim_customers.customer_id es varchar (id negocio), NO confundir con uuid customer_id de hechos.
   - fact_bdp.id_tiempo referencia gold.dim_time(id_time) — SOLO fact_bdp tiene id_tiempo.
   - fact_venta: filtrar fechas SOLO con columnas de la tabla (invoice_date, load_ts). NO JOIN gold.dim_time_sales ni gold.dim_time.
@@ -26,9 +29,9 @@ entities:
     kind: view
     description: KPIs financieros pre-calculados (balance, P&L, ratios, semáforos)
     prefer_for: [kpis, margen, utilidad, roe, roa, liquidez, endeudamiento, semaforo]
-    customer_filter: server_nombre_cliente
+    customer_filter: customer_id
     time_columns: [anio, anio_mes, mes_corto]
-    grain: [nombre_cliente, anio_mes]
+    grain: [customer_id, anio_mes]
     metrics:
       balance: [activo_corriente, activo_no_corriente, activo_total, pasivo_corriente, pasivo_no_corriente, pasivo_total, patrimonio_total]
       resultados: [ingresos_operacionales, costo_ventas_total, utilidad_bruta, utilidad_operacional, utilidad_neta]
@@ -47,6 +50,56 @@ entities:
     grain: [customer_id, anio_mes]
     metrics:
       ventas: [ventas_brutas, notas_credito, ventas_netas]
+
+  vw_ventas_por_producto_mes:
+    route_key: vw_ventas_por_producto_mes
+    qualified_name: gold.vw_ventas_por_producto_mes
+    layer: gold
+    kind: view
+    description: ventas agregadas por producto y mes (mix, top productos)
+    prefer_for: [producto, mix, top ventas, ventas por producto]
+    customer_filter: customer_id
+    time_columns: [anio_mes]
+    grain: [customer_id, anio_mes, product_name]
+    metrics:
+      ventas: [total_ventas, cantidad, num_facturas]
+
+  vw_presupuesto_vs_real_mes:
+    route_key: vw_presupuesto_vs_real_mes
+    qualified_name: gold.vw_presupuesto_vs_real_mes
+    layer: gold
+    kind: view
+    description: presupuesto vs saldo real por cuenta y mes
+    prefer_for: [presupuesto vs real, cumplimiento, variacion presupuesto, ejecucion presupuesto]
+    customer_filter: customer_id
+    time_columns: [anio_mes]
+    grain: [customer_id, anio_mes, cuenta_contable]
+    metrics:
+      presupuesto: [presupuesto, real_saldo, variacion, pct_cumplimiento]
+
+  vw_semaforos_cliente:
+    route_key: vw_semaforos_cliente
+    qualified_name: gold.vw_semaforos_cliente
+    layer: gold
+    kind: view
+    description: semáforos y ratios del último mes KPI por cliente
+    prefer_for: [semaforo actual, alertas financieras, estado semaforos]
+    customer_filter: customer_id
+    time_columns: [anio_mes]
+    grain: [customer_id]
+    metrics:
+      semaforos: [semaforo_liquidez, semaforo_endeudamiento, semaforo_margen_bruto, semaforo_utilidad_neta]
+
+  vw_ultimo_periodo_cliente:
+    route_key: vw_ultimo_periodo_cliente
+    qualified_name: gold.vw_ultimo_periodo_cliente
+    layer: gold
+    kind: view
+    description: último periodo con datos por fuente (kpis, ventas, bdp, presupuesto)
+    prefer_for: [ultimo periodo, ultimo mes disponible, datos disponibles]
+    customer_filter: customer_id
+    time_columns: [ultimo_anio_mes, ultima_fecha]
+    grain: [customer_id, fuente]
 
   fact_bdp:
     route_key: fact_bdp
@@ -110,7 +163,11 @@ routing:
   intents: [kpis, ventas, balance, presupuesto, clientes, cuentas, mixto]
   router_order:
     - vw_kpis_financiero
+    - vw_semaforos_cliente
     - vw_ventas_netas_mes
+    - vw_ventas_por_producto_mes
+    - vw_presupuesto_vs_real_mes
+    - vw_ultimo_periodo_cliente
     - fact_bdp
     - fact_venta
     - fact_nota_credito
@@ -177,10 +234,39 @@ routing:
     - linea de factura
     - línea de factura
     - detalle de ventas
+    - top productos
+    - productos mas vendidos
+  presupuesto_vs_real_keywords:
+    - presupuesto vs real
+    - presupuesto contra real
+    - cumplimiento presupuesto
+    - cumplimiento del presupuesto
+    - ejecucion presupuesto
+    - ejecución presupuesto
+    - variacion presupuesto
+    - variación presupuesto
+    - real vs presupuesto
+  ultimo_periodo_keywords:
+    - ultimo periodo
+    - último periodo
+    - ultimo mes disponible
+    - último mes disponible
+    - hasta que mes hay datos
+    - periodo disponible
+  semaforos_actuales_keywords:
+    - semaforo actual
+    - semáforo actual
+    - estado de semaforos
+    - estado de semáforos
+    - alertas financieras
   rules:
     - Si la pregunta se responde con KPIs agregados → SOLO vw_kpis_financiero.
+    - Si pregunta solo semáforos del periodo más reciente → vw_semaforos_cliente.
     - Si pregunta ventas netas/brutas mensuales o facturación menos notas crédito → SOLO vw_ventas_netas_mes.
-    - Usa fact_venta solo para detalle por producto/línea o mix de productos.
+    - Si pregunta mix, top productos o ventas por producto → vw_ventas_por_producto_mes (NO fact_venta).
+    - Si pregunta presupuesto vs real, cumplimiento o variación → vw_presupuesto_vs_real_mes.
+    - Si pregunta último periodo/mes con datos → vw_ultimo_periodo_cliente.
+    - Usa fact_venta solo si necesita líneas crudas no cubiertas por vw_ventas_por_producto_mes.
     - Usa fact_bdp solo para detalle por cuenta o movimientos granulares.
     - Ventas + presupuesto en la misma pregunta → tablas mixtas.
 
@@ -188,5 +274,6 @@ relationships:
   - fact_bdp.codigo_cuenta_contable ↔ dim_accounts.id_auxiliar (mismo customer_id)
   - fact_bdp.id_tiempo ↔ gold.dim_time.id_time
   - vw_ventas_netas_mes agrega fact_venta (invoice_date) y fact_nota_credito (credit_note_date)
-  - presupuesto_proyeccion ↔ fact_bdp por cuenta y periodo (anio_mes / source_date)
-  - vw_kpis_financiero.nombre_cliente ↔ app.customers.name
+  - vw_presupuesto_vs_real_mes agrega presupuesto_proyeccion + fact_bdp por cuenta y mes
+  - vw_ventas_por_producto_mes agrega fact_venta por producto y mes
+  - vw_kpis_financiero.customer_id ↔ app.customers.id (nombre_cliente conservado como atributo)

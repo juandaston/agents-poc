@@ -17,6 +17,7 @@ CUSTOMER_ID_PLACEHOLDER = "__CUSTOMER_ID__"
 
 # Columnas que no se envían al modelo (se omiten del payload).
 SENSITIVE_COLUMN_NAMES = frozenset({
+    "customer_id",
     "nombre_cliente",
     "name",
     "nombre",
@@ -123,7 +124,7 @@ def sanitize_results_for_llm(
 
 
 def customer_filter_sql(customer_id: str, customer_name: str | None = None) -> str:
-    """Filtro de cliente para vistas gold por nombre_cliente (solo servidor)."""
+    """Legacy: filtro por nombre_cliente (vw_dim_accounts u otras vistas sin customer_id)."""
     if customer_name:
         escaped = customer_name.replace("'", "''")
         return f"nombre_cliente = '{escaped}'"
