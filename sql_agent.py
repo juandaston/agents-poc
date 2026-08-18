@@ -2,6 +2,7 @@ import re
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from utils import has_real_data
 from db import run_sql, get_agent, get_customer_name
 from security import validate_sql
@@ -109,7 +110,7 @@ def generate_customer_answer(question, results, agent):
     prompt = build_customer_answer_prompt(
         question, results, agent, LLM_SAFETY_INSTRUCTION
     )
-    text = complete_text(agent, prompt)
+    text = complete_text(agent, prompt, max_tokens=512, timeout_sec=18)
     logger.info(
         "customer answer ready elapsed_ms=%s chars=%s",
         int((time.perf_counter() - started) * 1000),
@@ -125,8 +126,6 @@ def route_question(question: str, agent: dict):
         agent,
         f"""
 Eres un router de consultas financieras.
-
-Tablas / vistas disponibles:
 
 {build_router_entities_block()}
 
@@ -148,6 +147,8 @@ RESPONDE SOLO JSON así:
 Pregunta:
 {question}
 """,
+        max_tokens=400,
+        timeout_sec=18,
     )
 
     # limpiar posibles ```json
@@ -309,7 +310,7 @@ PREGUNTA:
 Devuelve SOLO SQL.
 """
 
-    response_text = complete_text(agent, prompt)
+    response_text = complete_text(agent, prompt, max_tokens=1200, timeout_sec=20)
     
     sql = response_text.strip()
     logger.info("sql llm raw response table=%s len=%s", table, len(sql))
@@ -417,11 +418,19 @@ def run_financial_query(question: str, customer_id: str, schema: str, customer_t
     safe_sql_list = [sanitize_sql_for_llm(s, privacy_secrets) for s in all_sql]
 
     if customer_type == "ADMIN":
-        logger.info("generating admin explanation")
-        final_answer = explain_results(safe_question, safe_sql_list, llm_results, agent)
-    
-    logger.info("generating customer-facing answer")
-    customer_answer = generate_customer_answer(safe_question, llm_results, agent)
+        logger.info("generating admin explanation and customer answer in parallel")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            admin_future = pool.submit(
+                explain_results, safe_question, safe_sql_list, llm_results, agent
+            )
+            customer_future = pool.submit(
+                generate_customer_answer, safe_question, llm_results, agent
+            )
+            final_answer = admin_future.result()
+            customer_answer = customer_future.result()
+    else:
+        logger.info("generating customer-facing answer")
+        customer_answer = generate_customer_answer(safe_question, llm_results, agent)
 
     logger.info(
         "pipeline done elapsed_ms=%s sources_consulted=%s sql_count=%s admin_answer=%s",
@@ -455,6 +464,8 @@ def explain_results(question, sql_list, results, agent):
         agent,
         prompt,
         model=admin_model or agent.get("model"),
+        max_tokens=1200,
+        timeout_sec=20,
     )
     logger.info(
         "admin explanation ready elapsed_ms=%s chars=%s",

@@ -53,7 +53,10 @@ def _log_built_prompt(kind: str, agent: dict, prompt: str) -> None:
         len(extra),
         len(prompt),
     )
-    logger.info(
+    if persona:
+        preview = persona if len(persona) <= 240 else persona[:239] + "…"
+        logger.info("prompt persona preview kind=%s: %s", kind, preview)
+    logger.debug(
         "=== LLM PROMPT (%s) agent_id=%s ===\n%s\n=== END PROMPT (%s) ===",
         kind,
         agent.get("id"),

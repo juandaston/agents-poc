@@ -89,6 +89,8 @@ def complete_text(
     prompt: str,
     *,
     model: str | None = None,
+    max_tokens: int | None = None,
+    timeout_sec: float | None = None,
 ) -> str:
     provider = resolve_provider(agent)
     chosen_model = resolve_model(model or agent.get("model"))
@@ -97,13 +99,16 @@ def complete_text(
 
     temperature = float(agent.get("temperature", 0.7))
     top_p = float(agent.get("top_p", 1.0))
-    max_tokens = int(agent.get("max_tokens", 4096))
+    out_tokens = int(max_tokens if max_tokens is not None else agent.get("max_tokens", 4096))
+    request_timeout = float(timeout_sec if timeout_sec is not None else 20.0)
 
     logger.info(
-        "llm complete provider=%s model=%s prompt_chars=%s",
+        "llm complete provider=%s model=%s prompt_chars=%s max_tokens=%s timeout_sec=%s",
         provider,
         chosen_model,
         len(prompt or ""),
+        out_tokens,
+        request_timeout,
     )
 
     if provider == "anthropic":
@@ -111,8 +116,9 @@ def complete_text(
         sampling = _anthropic_sampling_kwargs(temperature, top_p)
         response = client.messages.create(
             model=chosen_model,
-            max_tokens=max_tokens,
+            max_tokens=out_tokens,
             messages=[{"role": "user", "content": prompt}],
+            timeout=request_timeout,
             **sampling,
         )
         parts = []
@@ -125,11 +131,11 @@ def complete_text(
         return text
 
     client = _openai_client()
-    response = client.responses.create(
+    response = client.with_options(timeout=request_timeout).responses.create(
         model=chosen_model,
         temperature=temperature,
         top_p=top_p,
-        max_output_tokens=max_tokens,
+        max_output_tokens=out_tokens,
         input=prompt,
     )
     text = (response.output_text or "").strip()
