@@ -18,6 +18,7 @@ from data_privacy import (
     sanitize_text_for_llm,
 )
 
+from prompt_builder import build_admin_explain_prompt, build_customer_answer_prompt
 from semantic_loader import (
     build_intents_list,
     build_kpi_question_pattern,
@@ -105,27 +106,10 @@ def _prefer_kpi_view(route: dict) -> dict:
 def generate_customer_answer(question, results, agent):
     logger.info("generating customer answer model=%s", agent.get("model"))
     started = time.perf_counter()
-    text = complete_text(
-        agent,
-        f"""
-Eres un asistente financiero para clientes NO técnicos.
-
-Tu tarea:
-- resumir resultados en lenguaje simple
-- máximo 2-3 líneas
-- sin tecnicismos
-- directo y claro
-{LLM_SAFETY_INSTRUCTION}
-
-PREGUNTA:
-{question}
-
-RESULTADOS (sin datos identificables):
-{results}
-
-RESPONDE SOLO el mensaje final al cliente.
-""",
+    prompt = build_customer_answer_prompt(
+        question, results, agent, LLM_SAFETY_INSTRUCTION
     )
+    text = complete_text(agent, prompt)
     logger.info(
         "customer answer ready elapsed_ms=%s chars=%s",
         int((time.perf_counter() - started) * 1000),
@@ -464,26 +448,12 @@ def explain_results(question, sql_list, results, agent):
     config = agent.get("config") or {}
     if isinstance(config, dict):
         admin_model = config.get("admin_model")
+    prompt = build_admin_explain_prompt(
+        question, sql_list, results, agent, LLM_SAFETY_INSTRUCTION
+    )
     text = complete_text(
         agent,
-        f"""
-Eres un analista financiero senior.
-{LLM_SAFETY_INSTRUCTION}
-
-Pregunta:
-{question}
-
-SQL ejecutados (identificadores redactados):
-{sql_list}
-
-Resultados (sin columnas identificables):
-{results}
-
-Explica de forma clara:
-- qué pasó
-- insights
-- anomalías si existen
-""",
+        prompt,
         model=admin_model or agent.get("model"),
     )
     logger.info(

@@ -16,32 +16,63 @@ def get_connection():
     )
 
 
-def _agent_select_sql(*, include_provider: bool) -> str:
-    provider_col = "provider,\n            " if include_provider else ""
+def _agent_select_sql(*, include_provider: bool, include_prompts: bool) -> str:
+    provider_col = "a.provider,\n            " if include_provider else ""
+    if include_prompts:
+        prompt_cols = """
+            cap.body AS customer_answer_prompt_body,
+            aep.body AS admin_explain_prompt_body,
+        """
+        prompt_joins = """
+        LEFT JOIN app.agent_prompts cap
+            ON cap.id = a.customer_answer_prompt_id
+           AND cap.deleted_at IS NULL
+           AND cap.is_active = TRUE
+        LEFT JOIN app.agent_prompts aep
+            ON aep.id = a.admin_explain_prompt_id
+           AND aep.deleted_at IS NULL
+           AND aep.is_active = TRUE
+        """
+        from_clause = "FROM app.agents a"
+    else:
+        prompt_cols = ""
+        prompt_joins = ""
+        from_clause = "FROM app.agents"
+    table_prefix = "a." if include_prompts else ""
     return f"""
         SELECT
-            id,
-            tenant_id,
-            customer_id,
-            name,
-            model,
-            {provider_col}temperature,
-            max_tokens,
-            top_p,
-            frequency_penalty,
-            presence_penalty,
-            system_prompt,
-            schema_name,
-            config
-        FROM app.agents
-        WHERE id = %s
-          AND is_active = true
-          AND deleted_at IS NULL
+            {table_prefix}id,
+            {table_prefix}tenant_id,
+            {table_prefix}customer_id,
+            {table_prefix}name,
+            {table_prefix}model,
+            {provider_col}{table_prefix}temperature,
+            {table_prefix}max_tokens,
+            {table_prefix}top_p,
+            {table_prefix}frequency_penalty,
+            {table_prefix}presence_penalty,
+            {table_prefix}system_prompt,
+            {table_prefix}schema_name,
+            {prompt_cols}
+            {table_prefix}config
+        {from_clause}
+        {prompt_joins}
+        WHERE {table_prefix}id = %s
+          AND {table_prefix}is_active = true
+          AND {table_prefix}deleted_at IS NULL
     """
 
 
-def _load_agent_row(cur, agent_id: str, *, include_provider: bool) -> dict | None:
-    cur.execute(_agent_select_sql(include_provider=include_provider), (agent_id,))
+def _load_agent_row(
+    cur, agent_id: str, *, include_provider: bool, include_prompts: bool
+) -> dict | None:
+    cur.execute(
+        _agent_select_sql(
+            include_provider=include_provider,
+            include_prompts=include_prompts,
+        ),
+        (agent_id,),
+    )
     row = cur.fetchone()
     if not row:
         return None
@@ -59,13 +90,32 @@ def get_agent(agent_id: str):
     try:
         agent = None
         try:
-            agent = _load_agent_row(cur, agent_id, include_provider=True)
+            agent = _load_agent_row(
+                cur, agent_id, include_provider=True, include_prompts=True
+            )
         except psycopg2.errors.UndefinedColumn:
             conn.rollback()
             logger.warning(
-                "app.agents.provider column missing; infer provider from model/config"
+                "agent prompt columns missing; loading agent without prompt joins"
             )
-            agent = _load_agent_row(cur, agent_id, include_provider=False)
+            try:
+                agent = _load_agent_row(
+                    cur, agent_id, include_provider=True, include_prompts=False
+                )
+            except psycopg2.errors.UndefinedColumn:
+                conn.rollback()
+                logger.warning(
+                    "app.agents.provider column missing; infer provider from model/config"
+                )
+                agent = _load_agent_row(
+                    cur, agent_id, include_provider=False, include_prompts=False
+                )
+        except psycopg2.errors.UndefinedTable:
+            conn.rollback()
+            logger.warning("app.agent_prompts missing; loading agent without prompts")
+            agent = _load_agent_row(
+                cur, agent_id, include_provider=True, include_prompts=False
+            )
 
         if not agent:
             logger.warning("agent not found agent_id=%s", agent_id)
