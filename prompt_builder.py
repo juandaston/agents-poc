@@ -16,10 +16,6 @@ Tu tarea:
 - directo y claro
 """.strip()
 
-BASE_ADMIN_EXPLAIN = """
-Eres un analista financiero senior.
-""".strip()
-
 
 def _persona_block(agent: dict, body_key: str) -> str:
     text = (agent.get(body_key) or "").strip()
@@ -37,12 +33,7 @@ def _extra_block(agent: dict) -> str:
 
 
 def _log_built_prompt(kind: str, agent: dict, prompt: str) -> None:
-    persona_key = (
-        "customer_answer_prompt_body"
-        if kind == "customer_answer"
-        else "admin_explain_prompt_body"
-    )
-    persona = (agent.get(persona_key) or "").strip()
+    persona = (agent.get("customer_answer_prompt_body") or "").strip()
     extra = (agent.get("system_prompt") or "").strip()
     logger.info(
         "prompt assembled kind=%s agent=%r model=%s persona_chars=%s extra_chars=%s total_chars=%s",
@@ -89,38 +80,4 @@ RESPONDE SOLO el mensaje final al cliente.
     ]
     prompt = "\n".join(p for p in parts if p)
     _log_built_prompt("customer_answer", agent, prompt)
-    return prompt
-
-
-def build_admin_explain_prompt(
-    question: str,
-    sql_list,
-    results,
-    agent: dict,
-    safety_instruction: str,
-) -> str:
-    parts = [
-        BASE_ADMIN_EXPLAIN,
-        _persona_block(agent, "admin_explain_prompt_body"),
-        _extra_block(agent),
-        safety_instruction,
-        f"""
-
-Pregunta:
-{question}
-
-SQL ejecutados (identificadores redactados):
-{sql_list}
-
-Resultados (sin columnas identificables):
-{results}
-
-Explica de forma clara:
-- qué pasó
-- insights
-- anomalías si existen
-""".strip(),
-    ]
-    prompt = "\n".join(p for p in parts if p)
-    _log_built_prompt("admin_explain", agent, prompt)
     return prompt

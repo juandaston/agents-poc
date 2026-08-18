@@ -127,7 +127,4 @@ def query(payload: QueryRequest):
             payload.customer_id,
             exc,
         )
-        admin_detail = None
-        if (payload.customer_type or "").upper() == "ADMIN":
-            admin_detail = f"{type(exc).__name__}: {exc}"
-        return friendly_error_payload(admin_detail=admin_detail)
+        return friendly_error_payload()

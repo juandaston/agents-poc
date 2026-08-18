@@ -2,7 +2,6 @@ import re
 import json
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor
 from utils import has_real_data
 from db import run_sql, get_agent, get_customer_name
 from security import validate_sql
@@ -15,11 +14,10 @@ from data_privacy import (
     customer_filter_sql,
     inject_customer_filter,
     sanitize_results_for_llm,
-    sanitize_sql_for_llm,
     sanitize_text_for_llm,
 )
 
-from prompt_builder import build_admin_explain_prompt, build_customer_answer_prompt
+from prompt_builder import build_customer_answer_prompt
 from semantic_loader import (
     build_intents_list,
     build_kpi_question_pattern,
@@ -410,7 +408,6 @@ def run_financial_query(question: str, customer_id: str, schema: str, customer_t
         sources_planned,
     )
 
-    final_answer = None
     all_results = []
     all_sql = []
     sources_consulted: list[str] = []
@@ -434,7 +431,7 @@ def run_financial_query(question: str, customer_id: str, schema: str, customer_t
                 "sources_consulted": sources_consulted,
                 "sql": [sql],
                 "data": [],
-                "answer": "No se encontraron datos relacionados con la consulta.",
+                "answer": None,
                 "customer_answer": "No encontramos información relacionada con tu consulta.",
             }
 
@@ -447,29 +444,15 @@ def run_financial_query(question: str, customer_id: str, schema: str, customer_t
         logger.info("consulted source=%s rows=%s", source, len(data))
 
     llm_results = sanitize_results_for_llm(all_results, privacy_secrets)
-    safe_sql_list = [sanitize_sql_for_llm(s, privacy_secrets) for s in all_sql]
 
-    if customer_type == "ADMIN":
-        logger.info("generating admin explanation and customer answer in parallel")
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            admin_future = pool.submit(
-                explain_results, safe_question, safe_sql_list, llm_results, agent
-            )
-            customer_future = pool.submit(
-                generate_customer_answer, safe_question, llm_results, agent
-            )
-            final_answer = admin_future.result()
-            customer_answer = customer_future.result()
-    else:
-        logger.info("generating customer-facing answer")
-        customer_answer = generate_customer_answer(safe_question, llm_results, agent)
+    logger.info("generating customer-facing answer customer_type=%s", customer_type)
+    customer_answer = generate_customer_answer(safe_question, llm_results, agent)
 
     logger.info(
-        "pipeline done elapsed_ms=%s sources_consulted=%s sql_count=%s admin_answer=%s",
+        "pipeline done elapsed_ms=%s sources_consulted=%s sql_count=%s",
         int((time.perf_counter() - pipeline_started) * 1000),
         sources_consulted,
         len(all_sql),
-        customer_type == "ADMIN",
     )
 
     return {
@@ -477,31 +460,6 @@ def run_financial_query(question: str, customer_id: str, schema: str, customer_t
         "sources_consulted": sources_consulted,
         "sql": all_sql,
         "data": all_results,
-        "answer": final_answer,
-        "customer_answer": customer_answer
+        "answer": None,
+        "customer_answer": customer_answer,
     }
-
-def explain_results(question, sql_list, results, agent):
-
-    logger.info("explain_results sql_count=%s", len(sql_list))
-    started = time.perf_counter()
-    admin_model = None
-    config = agent.get("config") or {}
-    if isinstance(config, dict):
-        admin_model = config.get("admin_model")
-    prompt = build_admin_explain_prompt(
-        question, sql_list, results, agent, LLM_SAFETY_INSTRUCTION
-    )
-    text = complete_text(
-        agent,
-        prompt,
-        model=admin_model or agent.get("model"),
-        max_tokens=1200,
-        timeout_sec=20,
-    )
-    logger.info(
-        "admin explanation ready elapsed_ms=%s chars=%s",
-        int((time.perf_counter() - started) * 1000),
-        len(text or ""),
-    )
-    return text

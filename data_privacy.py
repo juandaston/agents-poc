@@ -3,7 +3,7 @@ Capa de privacidad: datos sensibles no deben enviarse a modelos LLM.
 
 - Filtros de cliente se inyectan en el servidor (SQL), no los genera el modelo.
 - customer_id se usa como placeholder en prompts y se sustituye tras la generación.
-- Resultados y SQL se sanitizan antes de explain_results / generate_customer_answer.
+- Resultados y SQL se sanitizan antes de generate_customer_answer.
 """
 from __future__ import annotations
 
