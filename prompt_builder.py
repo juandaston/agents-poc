@@ -61,15 +61,19 @@ def build_customer_answer_prompt(
     results,
     agent: dict,
     safety_instruction: str,
+    *,
+    history_block: str = "",
 ) -> str:
+    history_section = history_block or ""
     parts = [
         BASE_CUSTOMER_ANSWER,
         _persona_block(agent, "customer_answer_prompt_body"),
         _extra_block(agent),
         safety_instruction,
+        history_section,
         f"""
 
-PREGUNTA:
+PREGUNTA ACTUAL:
 {question}
 
 RESULTADOS (sin datos identificables):

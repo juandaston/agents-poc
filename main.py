@@ -4,6 +4,8 @@ import uuid
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional
+
 from pydantic import BaseModel
 
 from logging_setup import setup_logging
@@ -15,12 +17,18 @@ setup_logging()
 logger = logging.getLogger("agents-poc.api")
 
 
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
 class QueryRequest(BaseModel):
     agent_id: str
     message: str
     schema: str
     customer_id: str
     customer_type: str
+    messages: Optional[list[ChatMessage]] = None
 
 
 app = FastAPI()
@@ -87,12 +95,14 @@ def health():
 @app.post("/query")
 def query(payload: QueryRequest):
     logger.info(
-        "query received agent_id=%s customer_id=%s customer_type=%s schema=%s message_len=%s",
+        "query received agent_id=%s customer_id=%s customer_type=%s schema=%s "
+        "message_len=%s history_len=%s",
         payload.agent_id,
         payload.customer_id,
         payload.customer_type,
         payload.schema,
         len(payload.message or ""),
+        len(payload.messages or []),
     )
     logger.debug("query message=%r", payload.message)
 
@@ -104,6 +114,11 @@ def query(payload: QueryRequest):
             agent_id=payload.agent_id,
             schema=payload.schema,
             customer_type=payload.customer_type,
+            messages=(
+                [m.model_dump() for m in payload.messages]
+                if payload.messages
+                else None
+            ),
         )
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         route = result.get("route") if isinstance(result, dict) else None

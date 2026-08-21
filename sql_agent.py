@@ -22,6 +22,11 @@ from data_privacy import (
 )
 
 from prompt_builder import build_customer_answer_prompt
+from conversation_history import (
+    history_for_prompts,
+    normalize_messages,
+    sanitize_messages,
+)
 from semantic_loader import (
     build_intents_list,
     build_kpi_question_pattern,
@@ -146,11 +151,11 @@ def _fast_model(agent: dict) -> str:
     return resolve_fast_model(agent)
 
 
-def generate_customer_answer(question, results, agent):
+def generate_customer_answer(question, results, agent, *, history_block: str = ""):
     logger.info("generating customer answer model=%s", agent.get("model"))
     started = time.perf_counter()
     prompt = build_customer_answer_prompt(
-        question, results, agent, LLM_SAFETY_INSTRUCTION
+        question, results, agent, LLM_SAFETY_INSTRUCTION, history_block=history_block
     )
     text = complete_text(agent, prompt, max_tokens=512, timeout_sec=18)
     logger.info(
@@ -160,7 +165,7 @@ def generate_customer_answer(question, results, agent):
     )
     return text
 
-def route_question(question: str, agent: dict):
+def route_question(question: str, agent: dict, *, history_block: str = ""):
     heuristic = try_heuristic_route(question)
     if heuristic:
         logger.info(
@@ -178,6 +183,7 @@ def route_question(question: str, agent: dict):
         agent.get("model"),
     )
     started = time.perf_counter()
+    history_section = history_block or ""
     text = complete_text(
         agent,
         f"""
@@ -196,7 +202,7 @@ REGLAS DE ENRUTAMIENTO:
   ventas netas/brutas mensuales → vw_ventas_netas_mes.anio_mes;
   ventas detalle → fact_venta.invoice_date).
 - Si la intención es ambigua o pide montos contables, enruta a vw_fact_bdp_enriched.
-
+{history_section}
 RESPONDE SOLO JSON así:
 
 {{
@@ -205,7 +211,7 @@ RESPONDE SOLO JSON así:
   "reason": "..."
 }}
 
-Pregunta:
+PREGUNTA ACTUAL:
 {question}
 """,
         model=fast_model,
@@ -377,6 +383,7 @@ def generate_sql(
     *,
     retry_note: str | None = None,
     rubro_hints: str | None = None,
+    history_block: str = "",
 ):
 
     source = qualified_source(table, schema)
@@ -392,13 +399,14 @@ def generate_sql(
     kpi_table = _kpi_table()
     table_map = _table_map()
     schema_ctx = _schema_context()
+    history_section = history_block or ""
 
     if table == "vw_dim_accounts":
         prompt = f"""
 Eres un experto en SQL PostgreSQL financiero.
 
 {schema_ctx}
-
+{history_section}
 VISTA ACTUAL:
 gold.vw_dim_accounts
 
@@ -416,7 +424,7 @@ REGLAS (OBLIGATORIAS):
 - Ordena por id_auxiliar o nodo_s1 según la pregunta
 - máximo 100 filas
 
-PREGUNTA:
+PREGUNTA ACTUAL:
 {question}
 
 Devuelve SOLO SQL.
@@ -430,6 +438,7 @@ Devuelve SOLO SQL.
 Eres un experto en SQL PostgreSQL financiero.
 
 {schema_ctx}
+{history_section}
 {rubro_block}
 VISTA ACTUAL:
 gold.vw_fact_bdp_enriched
@@ -464,7 +473,7 @@ REGLAS (OBLIGATORIAS):
 - NO uses vw_kpis_financiero ni fact_bdp directo; esta vista ya une BDP + rubros + tiempo
 - Selecciona solo columnas relevantes; máximo 100 filas
 {retry_block}
-PREGUNTA:
+PREGUNTA ACTUAL:
 {question}
 
 Devuelve SOLO SQL.
@@ -474,7 +483,7 @@ Devuelve SOLO SQL.
 Eres un experto en SQL PostgreSQL financiero.
 
 {schema_ctx}
-
+{history_section}
 VISTA ACTUAL:
 gold.{kpi_table}
 
@@ -749,6 +758,9 @@ def _consult_with_silver_fallback(
     customer_id: str,
     schema: str,
     agent: dict,
+    *,
+    lookup_question: str | None = None,
+    history_block: str = "",
 ) -> dict:
     """
     Try gold (or primary) first, then silver_fallback from catalog.
@@ -757,6 +769,7 @@ def _consult_with_silver_fallback(
     sources_consulted: list[str] = []
     candidates = query_candidates(primary_table)
     last_sql = ""
+    hint_question = lookup_question or safe_question
 
     for idx, table in enumerate(candidates):
         source = qualified_source(table, schema)
@@ -770,7 +783,7 @@ def _consult_with_silver_fallback(
         )
         rubro_hints = None
         if table == "vw_fact_bdp_enriched":
-            rubro_hints = _resolve_enriched_hints(safe_question, customer_id)
+            rubro_hints = _resolve_enriched_hints(hint_question, customer_id)
         sql = generate_sql(
             safe_question,
             table,
@@ -778,6 +791,7 @@ def _consult_with_silver_fallback(
             schema,
             agent,
             rubro_hints=rubro_hints,
+            history_block=history_block,
         )
         last_sql = sql
         data = run_sql(sql, schema, source=source)
@@ -787,7 +801,7 @@ def _consult_with_silver_fallback(
             logger.info(
                 "enriched query returned 0 rows; retrying with full nombre_rubro_grupo catalog"
             )
-            retry_hints = _resolve_enriched_hints(safe_question, customer_id, broad=True)
+            retry_hints = _resolve_enriched_hints(hint_question, customer_id, broad=True)
             retry_sql = generate_sql(
                 safe_question,
                 table,
@@ -796,6 +810,7 @@ def _consult_with_silver_fallback(
                 agent,
                 retry_note=_ENRICHED_SQL_RETRY_NOTE,
                 rubro_hints=retry_hints,
+                history_block=history_block,
             )
             retry_data = run_sql(retry_sql, schema, source=source)
             if has_real_data(retry_data):
@@ -841,16 +856,26 @@ def _consult_with_silver_fallback(
     }
 
 
-def run_financial_query(question: str, customer_id: str, schema: str, customer_type: str, agent_id: str):
+def run_financial_query(
+    question: str,
+    customer_id: str,
+    schema: str,
+    customer_type: str,
+    agent_id: str,
+    *,
+    messages: list | None = None,
+):
 
     pipeline_started = time.perf_counter()
     logger.info(
-        "pipeline start agent_id=%s customer_id=%s customer_type=%s schema_param=%s question_len=%s",
+        "pipeline start agent_id=%s customer_id=%s customer_type=%s schema_param=%s "
+        "question_len=%s history_messages=%s",
         agent_id,
         customer_id,
         customer_type,
         schema,
         len(question or ""),
+        len(messages or []),
     )
     logger.debug("pipeline question=%r", question)
 
@@ -861,11 +886,25 @@ def run_financial_query(question: str, customer_id: str, schema: str, customer_t
     customer_name = get_customer_name(customer_id)
     privacy_secrets = build_privacy_secrets(customer_id, customer_name)
     safe_question = sanitize_text_for_llm(question, privacy_secrets)
+    normalized_history = normalize_messages(messages)
+    safe_history = sanitize_messages(
+        normalized_history,
+        lambda text: sanitize_text_for_llm(text, privacy_secrets),
+    )
+    history_block, effective_question = history_for_prompts(
+        safe_question, safe_history
+    )
+    if safe_history:
+        logger.info(
+            "conversation context turns=%s follow_up_effective=%s",
+            len(safe_history),
+            effective_question != safe_question,
+        )
 
-    route = route_question(safe_question, agent)
-    route = _maybe_route_to_ventas_netas(safe_question, route)
-    route = _maybe_route_to_tablero(safe_question, route)
-    route = _maybe_route_to_kpis(safe_question, route)
+    route = route_question(effective_question, agent, history_block=history_block)
+    route = _maybe_route_to_ventas_netas(effective_question, route)
+    route = _maybe_route_to_tablero(effective_question, route)
+    route = _maybe_route_to_kpis(effective_question, route)
     route = _prefer_kpi_view(route)
 
     route_tables = route.get("tables") or []
@@ -882,7 +921,13 @@ def run_financial_query(question: str, customer_id: str, schema: str, customer_t
 
     for table in route_tables:
         hit = _consult_with_silver_fallback(
-            table, safe_question, customer_id, schema, agent
+            table,
+            safe_question,
+            customer_id,
+            schema,
+            agent,
+            lookup_question=effective_question,
+            history_block=history_block,
         )
         if hit["data"] is None:
             logger.warning(
@@ -921,7 +966,9 @@ def run_financial_query(question: str, customer_id: str, schema: str, customer_t
     llm_results = sanitize_results_for_llm(all_results, privacy_secrets)
 
     logger.info("generating customer-facing answer customer_type=%s", customer_type)
-    customer_answer = generate_customer_answer(safe_question, llm_results, agent)
+    customer_answer = generate_customer_answer(
+        safe_question, llm_results, agent, history_block=history_block
+    )
 
     logger.info(
         "pipeline done elapsed_ms=%s sources_consulted=%s sql_count=%s",
