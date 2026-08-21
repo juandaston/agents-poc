@@ -52,6 +52,9 @@ entities:
     grain: [customer_id, anio_mes]
     silver_fallback: [fact_venta, fact_nota_credito]
     metrics:
+      ventas: [ventas_brutas, notas_credito, ventas_netas]
+
+  vw_ventas_por_producto_mes:
     route_key: vw_ventas_por_producto_mes
     qualified_name: gold.vw_ventas_por_producto_mes
     layer: gold
@@ -63,6 +66,9 @@ entities:
     grain: [customer_id, anio_mes, product_name]
     silver_fallback: [fact_venta]
     metrics:
+      ventas: [total_ventas, cantidad, num_facturas]
+
+  vw_presupuesto_vs_real_mes:
     route_key: vw_presupuesto_vs_real_mes
     qualified_name: gold.vw_presupuesto_vs_real_mes
     layer: gold
@@ -74,6 +80,9 @@ entities:
     grain: [customer_id, anio_mes, cuenta_contable]
     silver_fallback: [presupuesto_proyeccion, fact_bdp]
     metrics:
+      presupuesto: [presupuesto, real_saldo, variacion, pct_cumplimiento]
+
+  vw_semaforos_cliente:
     route_key: vw_semaforos_cliente
     qualified_name: gold.vw_semaforos_cliente
     layer: gold
@@ -85,6 +94,9 @@ entities:
     grain: [customer_id]
     silver_fallback: [fact_bdp]
     metrics:
+      semaforos: [semaforo_liquidez, semaforo_endeudamiento, semaforo_margen_bruto, semaforo_utilidad_neta]
+
+  vw_ultimo_periodo_cliente:
     route_key: vw_ultimo_periodo_cliente
     qualified_name: gold.vw_ultimo_periodo_cliente
     layer: gold
