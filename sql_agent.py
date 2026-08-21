@@ -847,7 +847,10 @@ def _validate_sql_for_route(sql: str, table: str) -> None:
     if "vw_fact_bdp_enriched" not in norm:
         raise ValueError("SQL debe usar gold.vw_fact_bdp_enriched")
     for forbidden in _ENRICHED_FORBIDDEN_IN_SQL:
-        if forbidden in norm:
+        # Match complete SQL identifiers only. A substring check incorrectly
+        # treats `fact_bdp` as present inside `vw_fact_bdp_enriched`.
+        identifier_pattern = rf"(?<![a-z0-9_]){re.escape(forbidden)}(?![a-z0-9_])"
+        if re.search(identifier_pattern, norm):
             raise ValueError(f"SQL no debe usar {forbidden}")
 
 

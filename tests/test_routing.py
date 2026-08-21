@@ -22,14 +22,23 @@ def test_account_search_skips_cuales():
 
 def test_validate_sql_for_route_rejects_silver():
     sql = (
-        "SELECT SUM(f.total) FROM silver.fact_nota_credito f "
-        "WHERE f.customer_id = 'x'"
+        "SELECT SUM(e.mvto) FROM gold.vw_fact_bdp_enriched e "
+        "JOIN silver.fact_nota_credito f ON f.customer_id = e.customer_id "
+        "WHERE e.customer_id = 'x'"
     )
     try:
         _validate_sql_for_route(sql, "vw_fact_bdp_enriched")
         assert False, "expected ValueError"
     except ValueError as exc:
         assert "fact_nota_credito" in str(exc)
+
+
+def test_validate_sql_for_route_accepts_enriched_view_name():
+    sql = (
+        "SELECT SUM(mvto) FROM gold.vw_fact_bdp_enriched "
+        "WHERE customer_id = 'x' AND anio_mes = '2026-01'"
+    )
+    _validate_sql_for_route(sql, "vw_fact_bdp_enriched")
 
 
 def test_maybe_route_ventas_skips_pure_devoluciones():
