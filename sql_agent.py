@@ -22,6 +22,7 @@ from data_privacy import (
 )
 
 from prompt_builder import build_customer_answer_prompt
+from sql_extract import extract_sql_from_llm_response
 from conversation_history import (
     history_for_prompts,
     normalize_messages,
@@ -374,7 +375,7 @@ def _resolve_rubro_hints(question: str, customer_id: str, *, broad: bool = False
     return _resolve_enriched_hints(question, customer_id, broad=broad)
 
 
-from sql_extract import extract_sql_from_llm_response
+def generate_sql(
     question,
     table,
     customer_id,
