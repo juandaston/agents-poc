@@ -468,6 +468,10 @@ REGLAS (OBLIGATORIAS):
   4. NO confundas concepto específico con rubro padre (seguros ≠ sumar todo Gasto Admon)
   5. nombre_rubro_grupo: valor exacto del catálogo; no pluralizar ('Gasto Financiero', no 'Gastos Financieros')
 - Para totales: SUM(mvto) — NUNCA ABS(mvto) ni SUM(ABS(mvto))
+  - SELECT típico agregado: anio_mes, SUM(mvto) AS total (y dimensiones del GROUP BY)
+  - Si usas GROUP BY, en SELECT SOLO columnas del GROUP BY + funciones agregadas (SUM, COUNT, MAX…)
+  - NUNCA mezcles GROUP BY con saldo_inicial, saldo_final, movimiento_debito, movimiento_credito sin agregar
+  - Usa saldos solo si la pregunta pide saldo explícito y sin GROUP BY incompatible
   - Rubro amplio: GROUP BY anio_mes, nombre_rubro_grupo
   - Sub-cuenta: GROUP BY anio_mes, nombre_cuenta (o sin GROUP BY si es un solo total)
   - Comparar varios meses: preferir UNA consulta con GROUP BY anio_mes (o FILTER/WHERE anio_mes IN (...))
@@ -748,6 +752,31 @@ _ENRICHED_SQL_RETRY_NOTE = (
     "Usa valores exactos del catálogo. SUM(mvto) sin ABS."
 )
 
+_ENRICHED_SQL_GROUPBY_RETRY_NOTE = (
+    "Error GROUP BY: en SELECT usa SOLO columnas del GROUP BY más SUM(mvto) (o COUNT). "
+    "No incluyas saldo_inicial, saldo_final, movimiento_debito ni movimiento_credito sin agregar."
+)
+
+
+def _sql_error_kind(exc: Exception) -> str | None:
+    msg = str(exc).lower()
+    if "groupingerror" in msg or "must appear in the group by" in msg:
+        return "groupby"
+    if "syntaxerror" in msg or "syntax error" in msg:
+        return "syntax"
+    return None
+
+
+def _try_run_sql(sql: str, schema: str, source: str) -> tuple[list | None, str | None]:
+    try:
+        return run_sql(sql, schema, source=source), None
+    except Exception as exc:
+        kind = _sql_error_kind(exc)
+        if kind:
+            logger.warning("sql execution failed kind=%s source=%s", kind, source)
+            return None, kind
+        raise
+
 
 def _consult_with_silver_fallback(
     primary_table: str,
@@ -791,9 +820,45 @@ def _consult_with_silver_fallback(
             history_block=history_block,
         )
         last_sql = sql
-        data = run_sql(sql, schema, source=source)
+        data, sql_err = _try_run_sql(sql, schema, source)
         if source not in sources_consulted:
             sources_consulted.append(source)
+        if (
+            sql_err == "groupby"
+            and table == "vw_fact_bdp_enriched"
+            and not is_fallback
+        ):
+            logger.info("enriched query GROUP BY error; retrying with aggregate-only SELECT")
+            retry_sql = generate_sql(
+                safe_question,
+                table,
+                customer_id,
+                schema,
+                agent,
+                retry_note=_ENRICHED_SQL_GROUPBY_RETRY_NOTE,
+                rubro_hints=rubro_hints,
+                history_block=history_block,
+            )
+            retry_data, retry_err = _try_run_sql(retry_sql, schema, source)
+            if retry_data is not None and not retry_err:
+                logger.info("enriched GROUP BY retry succeeded rows=%s", len(retry_data))
+                return {
+                    "data": retry_data,
+                    "sql": retry_sql,
+                    "table": table,
+                    "sources": sources_consulted,
+                    "routed_from": None,
+                }
+            last_sql = retry_sql
+            data = retry_data
+        elif sql_err:
+            logger.warning(
+                "sql execution aborted source=%s table=%s kind=%s",
+                source,
+                table,
+                sql_err,
+            )
+            data = None
         if not has_real_data(data) and table == "vw_fact_bdp_enriched" and not is_fallback:
             logger.info(
                 "enriched query returned 0 rows; retrying with full nombre_rubro_grupo catalog"
@@ -809,8 +874,8 @@ def _consult_with_silver_fallback(
                 rubro_hints=retry_hints,
                 history_block=history_block,
             )
-            retry_data = run_sql(retry_sql, schema, source=source)
-            if has_real_data(retry_data):
+            retry_data, retry_err = _try_run_sql(retry_sql, schema, source)
+            if has_real_data(retry_data) and not retry_err:
                 logger.info("enriched retry succeeded rows=%s", len(retry_data))
                 return {
                     "data": retry_data,

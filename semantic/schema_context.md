@@ -115,6 +115,7 @@ Columnas clave:
 
 Filtro: customer_id = uuid del tenant.
 Agregación: SUM(mvto) — NUNCA ABS(mvto) ni SUM(ABS(mvto)).
+Con GROUP BY: SELECT solo columnas del GROUP BY + agregados; no mezclar saldo_inicial/saldo_final/movimiento_* sin SUM.
 
 JERARQUÍA DE FILTROS (elige el nivel según la pregunta):
 1. Rubro KPI (nombre_rubro_grupo): SOLO totales de línea amplia
