@@ -374,7 +374,7 @@ def _resolve_rubro_hints(question: str, customer_id: str, *, broad: bool = False
     return _resolve_enriched_hints(question, customer_id, broad=broad)
 
 
-def generate_sql(
+from sql_extract import extract_sql_from_llm_response
     question,
     table,
     customer_id,
@@ -469,6 +469,8 @@ REGLAS (OBLIGATORIAS):
 - Para totales: SUM(mvto) — NUNCA ABS(mvto) ni SUM(ABS(mvto))
   - Rubro amplio: GROUP BY anio_mes, nombre_rubro_grupo
   - Sub-cuenta: GROUP BY anio_mes, nombre_cuenta (o sin GROUP BY si es un solo total)
+  - Comparar varios meses: preferir UNA consulta con GROUP BY anio_mes (o FILTER/WHERE anio_mes IN (...))
+    en lugar de CTEs complejas, salvo que sea imprescindible
   - NO incluyas fecha en GROUP BY si ya filtras un solo anio_mes
 - NO uses vw_kpis_financiero ni fact_bdp directo; esta vista ya une BDP + rubros + tiempo
 - Selecciona solo columnas relevantes; máximo 100 filas
@@ -720,17 +722,11 @@ Devuelve SOLO SQL.
     logger.info("sql llm raw response table=%s len=%s", table, len(sql))
     logger.debug("sql llm raw response table=%s:\n%s", table, sql)
 
-    # 🔥 limpiar markdown
-    sql = sql.replace("```sql", "").replace("```", "").strip()
-
-    # 🔥 extraer SOLO SELECT
-    match = re.search(r"(SELECT.*)", sql, re.S | re.I)
-
-    if not match:
+    try:
+        sql = extract_sql_from_llm_response(sql)
+    except ValueError:
         logger.error("invalid sql generated table=%s raw=%s", table, sql[:1000])
-        raise Exception(f"SQL inválido generado: {sql}")
-
-    sql = match.group(1).strip()
+        raise Exception(f"SQL inválido generado: {sql}") from None
 
     sql = apply_customer_id_placeholder(sql, customer_id)
 
