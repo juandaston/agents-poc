@@ -103,6 +103,11 @@ def get_kpi_entity_key(catalog: dict[str, Any] | None = None) -> str:
     return str(cat.get("kpi_entity") or "vw_kpis_financiero")
 
 
+def get_primary_entity_key(catalog: dict[str, Any] | None = None) -> str:
+    cat = catalog or load_catalog()
+    return str(cat.get("primary_entity") or cat.get("kpi_entity") or "vw_dim_accounts")
+
+
 def get_gold_schema(catalog: dict[str, Any] | None = None) -> str:
     cat = catalog or load_catalog()
     return str(cat.get("gold_schema") or "gold")
@@ -333,8 +338,8 @@ def try_heuristic_route(question: str, catalog: dict[str, Any] | None = None) ->
     if build_balance_question_pattern(catalog).search(q):
         return {
             "intent": "balance",
-            "tables": ["fact_bdp"],
-            "reason": "heuristic: balance / movimientos contables",
+            "tables": [get_primary_entity_key(catalog)],
+            "reason": "heuristic: balance / plan de cuentas / tablero (vw_dim_accounts)",
         }
     if build_presupuesto_question_pattern(catalog).search(q):
         return {

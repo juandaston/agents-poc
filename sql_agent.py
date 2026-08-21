@@ -23,6 +23,7 @@ from semantic_loader import (
     build_router_entities_block,
     build_routing_rules_block,
     get_kpi_entity_key,
+    get_primary_entity_key,
     get_table_map,
     load_schema_context_text,
     qualified_source,
@@ -40,6 +41,10 @@ def _schema_context() -> str:
 
 def _kpi_table() -> str:
     return get_kpi_entity_key()
+
+
+def _primary_table() -> str:
+    return get_primary_entity_key()
 
 
 def _table_map() -> dict[str, str]:
@@ -150,15 +155,17 @@ Tablas / vistas disponibles:
 REGLAS DE ENRUTAMIENTO:
 {build_routing_rules_block()}
 - Si implica filtro por fechas, mes, año o periodo, menciónalo en "reason"
-  (vw_kpis_financiero → anio / anio_mes; fact_bdp → source_date o gold.dim_time;
-  presupuesto → anio_mes; ventas netas/brutas mensuales → vw_ventas_netas_mes.anio_mes;
+  (vw_dim_accounts → sin columna temporal propia; vw_kpis_financiero → anio / anio_mes;
+  fact_bdp → source_date o gold.dim_time; presupuesto → anio_mes;
+  ventas netas/brutas mensuales → vw_ventas_netas_mes.anio_mes;
   ventas detalle → fact_venta.invoice_date).
+- Si la intención es ambigua o general, enruta a vw_dim_accounts (vista principal tableros).
 
 RESPONDE SOLO JSON así:
 
 {{
   "intent": "{build_intents_list()}",
-  "tables": ["{_kpi_table()}"],
+  "tables": ["{_primary_table()}"],
   "reason": "..."
 }}
 
@@ -203,7 +210,35 @@ def generate_sql(question, table, customer_id, schema, agent):
     table_map = _table_map()
     schema_ctx = _schema_context()
 
-    if table == kpi_table:
+    if table == "vw_dim_accounts":
+        prompt = f"""
+Eres un experto en SQL PostgreSQL financiero.
+
+{schema_ctx}
+
+VISTA ACTUAL:
+gold.vw_dim_accounts
+
+DESCRIPCIÓN:
+{table_map.get(table, "")}
+
+REGLAS (OBLIGATORIAS):
+- SOLO SELECT sobre gold.vw_dim_accounts (vista principal de tableros, sin JOINs)
+- SIEMPRE filtra por customer_id = '{CUSTOMER_ID_PLACEHOLDER}'
+- Columnas clave: id_auxiliar, nombre_auxiliar, nombre_cuenta, nombre_grupo, nombre_clase,
+  nombre_rubro_grupo, nombre_rubro_clase
+- Usa esta vista para plan de cuentas, rubros, jerarquía contable y datos organizados del tablero
+- NO uses dim_accounts ni fact_bdp si esta vista responde la pregunta
+- Selecciona solo columnas relevantes (evita SELECT * salvo resumen de catálogo)
+- Ordena por id_auxiliar o nombre_rubro_grupo según la pregunta
+- máximo 100 filas
+
+PREGUNTA:
+{question}
+
+Devuelve SOLO SQL.
+"""
+    elif table == kpi_table:
         prompt = f"""
 Eres un experto en SQL PostgreSQL financiero.
 

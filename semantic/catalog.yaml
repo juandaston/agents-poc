@@ -2,12 +2,14 @@
 # Consumidores: agents-poc (text-to-SQL), core/analytics (allowlist gold).
 version: 1
 
+primary_entity: vw_dim_accounts
 kpi_entity: vw_kpis_financiero
 gold_schema: gold
 
 global_rules:
-  - Filtra SIEMPRE por customer_id en tablas silver y vistas gold (incluye vw_kpis_financiero y vw_ventas_netas_mes).
-  - PREFERIR gold.vw_kpis_financiero para KPIs, ratios, semáforos y estado de resultados agregado.
+  - Filtra SIEMPRE por customer_id en tablas silver y vistas gold.
+  - PREFERIR gold.vw_dim_accounts como PRIMERA vista a consultar (datos organizados de tableros; misma fuente que dashboards).
+  - PREFERIR gold.vw_kpis_financiero para KPIs, ratios, semáforos y estado de resultados agregado (si vw_dim_accounts no alcanza).
   - PREFERIR gold.vw_ventas_netas_mes para ventas netas/brutas mensuales (facturación − notas crédito).
   - PREFERIR gold.vw_ventas_por_producto_mes para mix, top productos y ventas por producto.
   - PREFERIR gold.vw_presupuesto_vs_real_mes para presupuesto vs real, cumplimiento y variación.
@@ -23,6 +25,20 @@ global_rules:
   - Consultar SIEMPRE primero la vista gold enrutada; si no hay filas, reintentar con silver_fallback del catálogo.
 
 entities:
+  vw_dim_accounts:
+    route_key: vw_dim_accounts
+    qualified_name: gold.vw_dim_accounts
+    layer: gold
+    kind: view
+    description: Vista principal tableros — plan de cuentas enriquecido con rubros contables (datos organizados por cliente)
+    prefer_for: [tablero, cuentas, rubros, plan contable, auxiliar, subcuenta, grupo, clase, balance, movimientos]
+    customer_filter: customer_id
+    grain: [customer_id, id_auxiliar]
+    silver_fallback: [dim_accounts]
+    metrics:
+      jerarquia: [id_auxiliar, nombre_auxiliar, id_subcuenta, nombre_subcuenta, id_cuenta, nombre_cuenta, id_grupo, nombre_grupo, id_clase, nombre_clase]
+      rubros: [nombre_rubro_grupo, nombre_rubro_clase]
+
   vw_kpis_financiero:
     route_key: vw_kpis_financiero
     qualified_name: gold.vw_kpis_financiero
@@ -169,6 +185,7 @@ entities:
 routing:
   intents: [kpis, ventas, balance, presupuesto, clientes, cuentas, mixto]
   router_order:
+    - vw_dim_accounts
     - vw_kpis_financiero
     - vw_semaforos_cliente
     - vw_ventas_netas_mes
@@ -267,17 +284,20 @@ routing:
     - estado de semáforos
     - alertas financieras
   rules:
-    - Si la pregunta se responde con KPIs agregados → SOLO vw_kpis_financiero.
+    - Por defecto o preguntas generales / ambiguas → vw_dim_accounts (vista principal de tableros).
+    - Si la pregunta se responde con KPIs agregados → vw_kpis_financiero (no fact_bdp).
     - Si pregunta solo semáforos del periodo más reciente → vw_semaforos_cliente.
     - Si pregunta ventas netas/brutas mensuales o facturación menos notas crédito → SOLO vw_ventas_netas_mes.
     - Si pregunta mix, top productos o ventas por producto → vw_ventas_por_producto_mes (NO fact_venta).
     - Si pregunta presupuesto vs real, cumplimiento o variación → vw_presupuesto_vs_real_mes.
     - Si pregunta último periodo/mes con datos → vw_ultimo_periodo_cliente.
     - Usa fact_venta solo si necesita líneas crudas no cubiertas por vw_ventas_por_producto_mes.
-    - Usa fact_bdp solo para detalle por cuenta o movimientos granulares.
+    - Usa fact_bdp solo si vw_dim_accounts y vw_kpis_financiero no cubren el detalle granular.
     - Ventas + presupuesto en la misma pregunta → tablas mixtas.
 
 relationships:
+  - vw_dim_accounts es la vista gold principal para tableros (misma data organizada que Power BI / dashboards).
+  - fact_bdp.codigo_cuenta_contable ↔ vw_dim_accounts.id_auxiliar (mismo customer_id)
   - fact_bdp.codigo_cuenta_contable ↔ dim_accounts.id_auxiliar (mismo customer_id)
   - fact_bdp.id_tiempo ↔ gold.dim_time.id_time
   - vw_ventas_netas_mes agrega fact_venta (invoice_date) y fact_nota_credito (credit_note_date)

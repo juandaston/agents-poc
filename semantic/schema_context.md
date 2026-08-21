@@ -14,6 +14,7 @@ REGLAS GLOBALES:
   Una factura elaborada en junio pero creada en Siigo en julio entra al extract de julio con invoice_date de junio.
 - presupuesto_proyeccion.anio_mes formato 'YYYY-MM' (CHECK ^\\d{4}-(0[1-9]|1[0-2])$); mes es columna generada (1-12).
 - Tablas test_* son entornos de prueba; preferir tablas productivas salvo que se indique lo contrario.
+- El servidor consulta primero la vista gold enrutada; si no hay filas, reintenta con silver_fallback del catálogo.
 
 ──────────────────────────────────────────────────────────────────────────────
 FILTRADO POR FECHAS Y PERIODOS (usar cuando la pregunta lo pida o implique tiempo)
@@ -95,6 +96,31 @@ Reglas de filtrado temporal:
 - Para balance vs presupuesto en el mismo periodo, alinea fact_bdp (source_date o t.AnioMes)
   con presupuesto.anio_mes.
 - Usa literales DATE 'YYYY-MM-DD' o anio_mes 'YYYY-MM'; evita funciones no deterministas innecesarias.
+
+──────────────────────────────────────────────────────────────────────────────
+0. gold.vw_dim_accounts — vista principal tableros (CONSULTAR PRIMERO)
+──────────────────────────────────────────────────────────────────────────────
+Vista gold. Plan de cuentas enriquecido con rubros; misma fuente organizada que tableros y Power BI.
+Grain: customer_id + id_auxiliar (cuenta auxiliar).
+
+Columnas:
+- customer_id           uuid — filtrar SIEMPRE por este campo
+- nombre_cliente        varchar — atributo (no usar para filtrar)
+- integration_id        uuid
+- id_auxiliar           varchar — código auxiliar / cuenta contable
+- nombre_auxiliar       varchar
+- id_subcuenta, nombre_subcuenta
+- id_cuenta, nombre_cuenta
+- id_grupo, nombre_grupo
+- id_clase, nombre_clase
+- nombre_rubro_grupo    varchar — rubro para agrupación (KPIs, balance)
+- nombre_rubro_clase    varchar — clase contable (Activo, Pasivo, Patrimonio, …)
+- load_ts, source_table
+
+Filtro: customer_id = uuid del tenant.
+
+Uso: primera vista a consultar; plan de cuentas; rubros; preguntas generales de tableros.
+Fallback silver: silver.dim_accounts.
 
 ──────────────────────────────────────────────────────────────────────────────
 1. silver.dim_accounts — plan de cuentas / auxiliares contables por cliente
