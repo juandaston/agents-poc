@@ -2,7 +2,8 @@ BASE DE DATOS FINANCIERA (PostgreSQL — schema silver, referencias gold)
 
 REGLAS GLOBALES:
 - Filtra SIEMPRE por customer_id en tablas silver y vistas gold.
-- PREFERIR gold.vw_fact_bdp_enriched para montos contables, P&L, balance y tableros (BDP + rubros unidos).
+- PREFERIR gold.vw_fact_bdp_enriched para montos contables, P&L y tableros (BDP + rubros unidos).
+- En TODA consulta a gold.vw_fact_bdp_enriched filtrar uso = 'ER' (Estado de Resultados). Por ahora NO consultar uso = 'BG' (Balance General).
 - PREFERIR gold.vw_dim_accounts SOLO para catálogo de cuentas/rubros SIN montos.
 - PREFERIR gold.vw_kpis_financiero SOLO para ratios pre-calculados (ROE, ROA, liquidez, semáforos agregados).
 - PREFERIR gold.vw_fact_bdp_enriched para ventas/facturación/ingresos operacionales (nombre_rubro_grupo = 'Ingresos Operacionales').

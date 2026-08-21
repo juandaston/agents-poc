@@ -493,6 +493,7 @@ REGLAS (OBLIGATORIAS):
 - SOLO SELECT sobre gold.vw_fact_bdp_enriched (una sola vista, sin JOINs, sin otras tablas)
 - PROHIBIDO: fact_nota_credito, fact_venta, fact_bdp, silver.*, vw_ventas_netas_mes
 - SIEMPRE filtra por customer_id = '{CUSTOMER_ID_PLACEHOLDER}'
+- SIEMPRE filtra por uso = 'ER' (Estado de Resultados). Por ahora NO consultes uso = 'BG'
 - Montos: mvto (movimiento), saldo_final, saldo_inicial, movimiento_debito, movimiento_credito
 - Cuenta (jerarquía PUC): id_auxiliar, nombre_auxiliar, id_cuenta, nombre_cuenta,
   id_grupo, nombre_grupo, id_subcuenta, nombre_subcuenta
@@ -835,6 +836,7 @@ _ENRICHED_SQL_GROUPBY_RETRY_NOTE = (
 _ENRICHED_SQL_WRONG_SOURCE_RETRY_NOTE = (
     "Debes consultar SOLO gold.vw_fact_bdp_enriched. "
     "PROHIBIDO fact_nota_credito, fact_venta y cualquier tabla silver. "
+    "SIEMPRE incluye uso = 'ER'; por ahora no consultes uso = 'BG'. "
     "Devoluciones: FROM gold.vw_fact_bdp_enriched WHERE nombre_auxiliar ILIKE '%devoluc%' "
     "o nombre_cuenta ILIKE '%devoluc%'; filtro temporal con anio_mes; SUM(mvto)."
 )
@@ -846,6 +848,12 @@ def _validate_sql_for_route(sql: str, table: str) -> None:
         return
     if "vw_fact_bdp_enriched" not in norm:
         raise ValueError("SQL debe usar gold.vw_fact_bdp_enriched")
+    er_predicate = (
+        r'(?<![a-z0-9_])(?:[a-z_][a-z0-9_]*\.)?"?uso"?\s*=\s*\'er\''
+    )
+    er_filter_pattern = rf"\bwhere\b[\s\S]*{er_predicate}"
+    if not re.search(er_filter_pattern, norm):
+        raise ValueError("SQL debe incluir uso = 'ER'")
     for forbidden in _ENRICHED_FORBIDDEN_IN_SQL:
         # Match complete SQL identifiers only. A substring check incorrectly
         # treats `fact_bdp` as present inside `vw_fact_bdp_enriched`.

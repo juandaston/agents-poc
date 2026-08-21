@@ -24,7 +24,7 @@ def test_validate_sql_for_route_rejects_silver():
     sql = (
         "SELECT SUM(e.mvto) FROM gold.vw_fact_bdp_enriched e "
         "JOIN silver.fact_nota_credito f ON f.customer_id = e.customer_id "
-        "WHERE e.customer_id = 'x'"
+        "WHERE e.customer_id = 'x' AND e.uso = 'ER'"
     )
     try:
         _validate_sql_for_route(sql, "vw_fact_bdp_enriched")
@@ -36,9 +36,33 @@ def test_validate_sql_for_route_rejects_silver():
 def test_validate_sql_for_route_accepts_enriched_view_name():
     sql = (
         "SELECT SUM(mvto) FROM gold.vw_fact_bdp_enriched "
-        "WHERE customer_id = 'x' AND anio_mes = '2026-01'"
+        "WHERE customer_id = 'x' AND uso = 'ER' AND anio_mes = '2026-01'"
     )
     _validate_sql_for_route(sql, "vw_fact_bdp_enriched")
+
+
+def test_validate_sql_for_route_requires_er_usage():
+    sql = (
+        "SELECT SUM(mvto) FROM gold.vw_fact_bdp_enriched "
+        "WHERE customer_id = 'x' AND anio_mes = '2026-01'"
+    )
+    try:
+        _validate_sql_for_route(sql, "vw_fact_bdp_enriched")
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "uso = 'ER'" in str(exc)
+
+
+def test_validate_sql_for_route_requires_er_in_where():
+    sql = (
+        "SELECT uso = 'ER' AS es_resultado, SUM(mvto) "
+        "FROM gold.vw_fact_bdp_enriched WHERE customer_id = 'x' GROUP BY uso"
+    )
+    try:
+        _validate_sql_for_route(sql, "vw_fact_bdp_enriched")
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "uso = 'ER'" in str(exc)
 
 
 def test_maybe_route_ventas_skips_pure_devoluciones():
