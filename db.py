@@ -219,6 +219,72 @@ def run_sql(query: str, schema: str, source: str | None = None):
         conn.close()
 
 
+def fetch_nombre_rubro_grupo_candidates(
+    customer_id: str,
+    ilike_patterns: list[str] | None = None,
+    *,
+    limit: int = 25,
+) -> list[str]:
+    """Distinct nombre_rubro_grupo from gold.vw_dim_accounts for SQL hint injection."""
+    logger.info(
+        "fetching nombre_rubro_grupo candidates customer_id=%s patterns=%s",
+        customer_id,
+        ilike_patterns,
+    )
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        if ilike_patterns:
+            conditions = " OR ".join(
+                "nombre_rubro_grupo ILIKE %s" for _ in ilike_patterns
+            )
+            params: list = [customer_id, *ilike_patterns, limit]
+            cur.execute(
+                f"""
+                SELECT DISTINCT nombre_rubro_grupo
+                FROM gold.vw_dim_accounts
+                WHERE customer_id = %s::uuid
+                  AND nombre_rubro_grupo IS NOT NULL
+                  AND TRIM(nombre_rubro_grupo) <> ''
+                  AND nombre_rubro_grupo <> 'Sin Clasificar'
+                  AND ({conditions})
+                ORDER BY 1
+                LIMIT %s
+                """,
+                params,
+            )
+        else:
+            cur.execute(
+                """
+                SELECT DISTINCT nombre_rubro_grupo
+                FROM gold.vw_dim_accounts
+                WHERE customer_id = %s::uuid
+                  AND nombre_rubro_grupo IS NOT NULL
+                  AND TRIM(nombre_rubro_grupo) <> ''
+                  AND nombre_rubro_grupo <> 'Sin Clasificar'
+                ORDER BY 1
+                LIMIT %s
+                """,
+                (customer_id, limit),
+            )
+        names = [str(row[0]).strip() for row in cur.fetchall() if row and row[0]]
+        logger.info(
+            "nombre_rubro_grupo candidates customer_id=%s count=%s",
+            customer_id,
+            len(names),
+        )
+        return names
+    except Exception:
+        logger.exception(
+            "failed to fetch nombre_rubro_grupo candidates customer_id=%s",
+            customer_id,
+        )
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
 def _sample_row(row: dict, max_len: int = 120) -> dict:
     out = {}
     for key, value in row.items():

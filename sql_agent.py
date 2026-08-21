@@ -3,7 +3,7 @@ import json
 import logging
 import time
 from utils import has_real_data
-from db import run_sql, get_agent, get_customer_name
+from db import run_sql, get_agent, get_customer_name, fetch_nombre_rubro_grupo_candidates
 from security import validate_sql
 from llm_client import complete_text, resolve_fast_model
 from data_privacy import (
@@ -224,7 +224,64 @@ Pregunta:
     return route
 
 
-def generate_sql(question, table, customer_id, schema, agent):
+_RUBRO_KEYWORD_PATTERNS: list[tuple[tuple[str, ...], str]] = [
+    (("gasto financiero", "gastos financieros", "financier"), "%financier%"),
+    (("gasto admon", "gastos admin", "administrativ"), "%admin%"),
+    (("ingreso operacional", "ingresos operacionales", "ingresos"), "%ingres%"),
+    (("costo vent", "costos de vent", "costo de vent"), "%costo%"),
+    (("utilidad bruta", "utilidad operacional", "utilidad neta"), "%utilidad%"),
+    (("activo corriente",), "%activo corriente%"),
+    (("activo no corriente", "activo fijo"), "%activo%"),
+    (("pasivo corriente", "pasivo no corriente"), "%pasivo%"),
+    (("patrimonio",), "%patrimonio%"),
+]
+
+
+def _rubro_search_patterns(question: str) -> list[str]:
+    q = question.lower()
+    patterns: list[str] = []
+    seen: set[str] = set()
+    for keywords, pattern in _RUBRO_KEYWORD_PATTERNS:
+        if any(kw in q for kw in keywords) and pattern not in seen:
+            patterns.append(pattern)
+            seen.add(pattern)
+    return patterns
+
+
+def _build_rubro_hints_block(candidates: list[str]) -> str:
+    if not candidates:
+        return ""
+    lines = "\n".join(f"  - '{name}'" for name in candidates)
+    return f"""
+VALORES nombre_rubro_grupo VÁLIDOS PARA ESTE CLIENTE (gold.vw_dim_accounts):
+{lines}
+- Filtra con nombre_rubro_grupo = 'valor exacto de la lista' (respeta mayúsculas y singular/plural).
+- NO inventes valores (ej. 'Gastos Financieros' si la lista dice 'Gasto Financiero').
+- NO uses nodo_s1 ni nombre_grupo en WHERE para conceptos P&L/balance.
+"""
+
+
+def _resolve_rubro_hints(question: str, customer_id: str, *, broad: bool = False) -> str:
+    patterns = None if broad else _rubro_search_patterns(question)
+    if broad or not patterns:
+        candidates = fetch_nombre_rubro_grupo_candidates(customer_id)
+    else:
+        candidates = fetch_nombre_rubro_grupo_candidates(
+            customer_id, ilike_patterns=patterns
+        )
+    return _build_rubro_hints_block(candidates)
+
+
+def generate_sql(
+    question,
+    table,
+    customer_id,
+    schema,
+    agent,
+    *,
+    retry_note: str | None = None,
+    rubro_hints: str | None = None,
+):
 
     source = qualified_source(table, schema)
     fast_model = _fast_model(agent)
@@ -269,11 +326,15 @@ PREGUNTA:
 Devuelve SOLO SQL.
 """
     elif table == "vw_fact_bdp_enriched":
+        retry_block = ""
+        if retry_note:
+            retry_block = f"\nREINTENTO (0 filas en consulta previa):\n{retry_note}\n"
+        rubro_block = rubro_hints or ""
         prompt = f"""
 Eres un experto en SQL PostgreSQL financiero.
 
 {schema_ctx}
-
+{rubro_block}
 VISTA ACTUAL:
 gold.vw_fact_bdp_enriched
 
@@ -290,11 +351,18 @@ REGLAS (OBLIGATORIAS):
   - Mes: WHERE anio_mes = '2026-06'
   - Año: WHERE anio = 2026 OR anio_mes LIKE '2026-%'
   - Último periodo: ORDER BY anio DESC, anio_mes DESC LIMIT 1 (subconsulta o CTE si agregas)
-- Para totales por rubro: SUM(mvto) o SUM(saldo_final) GROUP BY nombre_rubro_grupo, nodo_s1, anio_mes
-- Ingresos operacionales: filtra nombre_rubro_grupo = 'Ingresos Operacionales' o nodo_s1 según cliente
+- FILTROS TABLERO (CRÍTICO — igual que Power BI):
+  - SIEMPRE filtra por nombre_rubro_grupo (valor exacto del catálogo del cliente)
+  - Si hay lista de valores válidos arriba, usa nombre_rubro_grupo = 'valor exacto'
+  - Si no hay lista, nombre_rubro_grupo ILIKE '%palabra%' (ej. '%financier%', '%admin%', '%ingres%')
+  - NO uses nodo_s1 ni nombre_grupo en WHERE para conceptos P&L/balance
+  - NO pluralices ni inventes labels (ej. 'Gasto Financiero', no 'Gastos Financieros')
+  - Ejemplos típicos (verificar en catálogo): 'Gasto Financiero', 'Gasto Admon', 'Ingresos Operacionales'
+- Para totales mensuales: SUM(ABS(mvto)) o SUM(mvto) GROUP BY anio_mes, nombre_rubro_grupo
+  - NO incluyas fecha en GROUP BY si ya filtras un solo anio_mes
 - NO uses vw_kpis_financiero ni fact_bdp directo; esta vista ya une BDP + rubros + tiempo
 - Selecciona solo columnas relevantes; máximo 100 filas
-
+{retry_block}
 PREGUNTA:
 {question}
 
@@ -401,7 +469,8 @@ DESCRIPCIÓN:
 REGLAS (OBLIGATORIAS):
 - SOLO SELECT sobre gold.vw_presupuesto_vs_real_mes (sin JOINs)
 - SIEMPRE filtra por customer_id = '{CUSTOMER_ID_PLACEHOLDER}'
-- Columnas: anio_mes, cuenta, cuenta_contable, presupuesto, real_saldo, variacion, pct_cumplimiento
+- Columnas: anio_mes, cuenta, cuenta_contable, presupuesto, real_saldo, variacion, pct_cumplimiento,
+  nombre_rubro_grupo, nombre_rubro_clase, uso, nodo_s1, nodo_s2, sub_nodo_s3, cod_nodo
 - FECHAS: anio_mes ('YYYY-MM')
 - NO JOIN presupuesto_proyeccion ni fact_bdp manualmente
 - máximo 50 filas
@@ -566,6 +635,12 @@ Devuelve SOLO SQL.
     return validated
 
 
+_ENRICHED_SQL_RETRY_NOTE = (
+    "Usa SOLO nombre_rubro_grupo con un valor EXACTO de la lista del catálogo "
+    "(no inventes plurales ni uses nodo_s1). GROUP BY anio_mes, nombre_rubro_grupo."
+)
+
+
 def _consult_with_silver_fallback(
     primary_table: str,
     safe_question: str,
@@ -591,11 +666,47 @@ def _consult_with_silver_fallback(
             primary_table,
             is_fallback,
         )
-        sql = generate_sql(safe_question, table, customer_id, schema, agent)
+        rubro_hints = None
+        if table == "vw_fact_bdp_enriched":
+            rubro_hints = _resolve_rubro_hints(safe_question, customer_id)
+        sql = generate_sql(
+            safe_question,
+            table,
+            customer_id,
+            schema,
+            agent,
+            rubro_hints=rubro_hints,
+        )
         last_sql = sql
         data = run_sql(sql, schema, source=source)
         if source not in sources_consulted:
             sources_consulted.append(source)
+        if not has_real_data(data) and table == "vw_fact_bdp_enriched" and not is_fallback:
+            logger.info(
+                "enriched query returned 0 rows; retrying with full nombre_rubro_grupo catalog"
+            )
+            retry_hints = _resolve_rubro_hints(safe_question, customer_id, broad=True)
+            retry_sql = generate_sql(
+                safe_question,
+                table,
+                customer_id,
+                schema,
+                agent,
+                retry_note=_ENRICHED_SQL_RETRY_NOTE,
+                rubro_hints=retry_hints,
+            )
+            retry_data = run_sql(retry_sql, schema, source=source)
+            if has_real_data(retry_data):
+                logger.info("enriched retry succeeded rows=%s", len(retry_data))
+                return {
+                    "data": retry_data,
+                    "sql": retry_sql,
+                    "table": table,
+                    "sources": sources_consulted,
+                    "routed_from": None,
+                }
+            last_sql = retry_sql
+            data = retry_data
         if has_real_data(data):
             if is_fallback:
                 logger.info(

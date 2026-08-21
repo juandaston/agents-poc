@@ -114,8 +114,14 @@ Columnas clave:
 - anio_mes ('YYYY-MM'), anio, mes_corto, trimestre, fecha, source_date
 
 Filtro: customer_id = uuid del tenant.
-Agregación típica: SUM(mvto) o SUM(saldo_final) GROUP BY nodo_s1, nombre_rubro_grupo, anio_mes.
-Fallback silver: silver.fact_bdp.
+Agregación típica: SUM(mvto) o SUM(ABS(mvto)) GROUP BY anio_mes, nombre_rubro_grupo.
+
+FILTROS tablero (CRÍTICO):
+- SIEMPRE filtrar por nombre_rubro_grupo con el valor EXACTO del catálogo (gold.vw_dim_accounts).
+- NO pluralizar ni inventar labels (ej. 'Gasto Financiero', no 'Gastos Financieros').
+- NO usar nodo_s1 ni nombre_grupo en WHERE para P&L/balance.
+- Ej. gastos financieros → nombre_rubro_grupo = 'Gasto Financiero' (verificar en dim por cliente)
+- Ej. ingresos operacionales → nombre_rubro_grupo = 'Ingresos Operacionales'
 
 ──────────────────────────────────────────────────────────────────────────────
 0b. gold.vw_dim_accounts — catálogo plan de cuentas (SIN montos)
@@ -311,9 +317,9 @@ Columnas:
 Uso: balance de prueba; saldo_final total; variaciones por cuenta y periodo (id_tiempo / source_date).
 
 ──────────────────────────────────────────────────────────────────────────────
-6. gold.vw_kpis_financiero — KPIs financieros pre-calculados (PREFERIR para preguntas de KPIs)
+6. gold.vw_kpis_financiero — KPIs financieros pre-calculados (ratios / semáforos agregados)
 ──────────────────────────────────────────────────────────────────────────────
-Vista en schema gold. Agrega fact_bdp + gold.vw_dim_accounts + gold.dim_time + app.customers.
+Vista en schema gold. Agrega gold.vw_fact_bdp_enriched (rubros de vw_dim_accounts).
 Una fila por cliente, año y mes (anio_mes). NO requiere JOINs adicionales.
 
 Dimensiones:
@@ -370,7 +376,9 @@ NO usar fact_venta si esta vista responde la pregunta.
 ──────────────────────────────────────────────────────────────────────────────
 Grain: customer_id, anio_mes, cuenta_contable
 Columnas: presupuesto, real_saldo, variacion, pct_cumplimiento
-Filtrar: customer_id + anio_mes. NO JOIN presupuesto con fact_bdp manualmente.
+Rubros (vw_dim_accounts): nombre_rubro_grupo, nombre_rubro_clase, uso, nodo_s1, nodo_s2, sub_nodo_s3, cod_nodo
+Real vía vw_fact_bdp_enriched; presupuesto enriquecido con vw_dim_accounts en filas solo presupuesto.
+Filtrar: customer_id + anio_mes.
 
 ──────────────────────────────────────────────────────────────────────────────
 6d. gold.vw_semaforos_cliente — semáforos del último mes KPI
@@ -406,8 +414,8 @@ Sin customer_id.
 ──────────────────────────────────────────────────────────────────────────────
 RELACIONES ÚTILES PARA JOINS
 ──────────────────────────────────────────────────────────────────────────────
-- fact_bdp.codigo_cuenta_contable ↔ dim_accounts.id_auxiliar / id_cuenta (mismo customer_id)
-- fact_bdp.id_tiempo ↔ gold.dim_time.id_time (fecha/periodo balance)
-- presupuesto_proyeccion.cuenta / cuenta_contable ↔ fact_bdp.codigo_cuenta_contable (mismo customer_id + periodo)
-- fact_venta.customer_id = dim_accounts.customer_id = fact_bdp.customer_id = presupuesto_proyeccion.customer_id
-- vw_kpis_financiero.customer_id ↔ app.customers.id (join desde nombre_cliente en la vista base)
+- vw_fact_bdp_enriched = fact_bdp + vw_dim_accounts + dim_time (vista base contable con montos)
+- fact_bdp.codigo_cuenta_contable ↔ vw_dim_accounts.id_auxiliar (mismo customer_id)
+- vw_kpis_financiero agrega vw_fact_bdp_enriched por nombre_rubro_grupo / nombre_rubro_clase
+- presupuesto_proyeccion.cuenta / cuenta_contable ↔ vw_dim_accounts.id_auxiliar (mismo customer_id + periodo)
+- fact_venta.customer_id = vw_dim_accounts.customer_id = fact_bdp.customer_id = presupuesto_proyeccion.customer_id

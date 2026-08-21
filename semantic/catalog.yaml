@@ -9,6 +9,7 @@ gold_schema: gold
 global_rules:
   - Filtra SIEMPRE por customer_id en tablas silver y vistas gold.
   - PREFERIR gold.vw_fact_bdp_enriched para montos contables (mvto, saldos), P&L, balance y tableros (fact_bdp + rubros ya unidos).
+  - En vw_fact_bdp_enriched filtrar SIEMPRE por nombre_rubro_grupo (valor exacto del catálogo por cliente); no usar nodo_s1 ni nombre_grupo en WHERE para P&L.
   - PREFERIR gold.vw_dim_accounts SOLO para catálogo de cuentas / jerarquía SIN montos (no tiene mvto ni saldo).
   - PREFERIR gold.vw_kpis_financiero SOLO para ratios pre-calculados (ROE, ROA, liquidez, endeudamiento) cuando la pregunta lo pida explícitamente.
   - PREFERIR gold.vw_ventas_netas_mes para ventas netas/brutas mensuales (facturación − notas crédito).
@@ -50,7 +51,7 @@ entities:
     customer_filter: customer_id
     time_columns: [anio_mes, anio, fecha, source_date, mes_corto]
     grain: [customer_id, id_auxiliar, id_tiempo]
-    silver_fallback: [fact_bdp]
+    silver_fallback: []
     metrics:
       montos: [mvto, saldo_inicial, saldo_final, movimiento_debito, movimiento_credito]
       rubros: [nombre_rubro_grupo, nombre_rubro_clase, nodo_s1, nodo_s2, sub_nodo_s3, cod_nodo, uso]
@@ -114,6 +115,7 @@ entities:
     silver_fallback: [presupuesto_proyeccion, fact_bdp]
     metrics:
       presupuesto: [presupuesto, real_saldo, variacion, pct_cumplimiento]
+      rubros: [nombre_rubro_grupo, nombre_rubro_clase, nodo_s1, nodo_s2, sub_nodo_s3, cod_nodo, uso]
 
   vw_semaforos_cliente:
     route_key: vw_semaforos_cliente
