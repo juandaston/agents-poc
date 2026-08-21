@@ -1,9 +1,10 @@
 BASE DE DATOS FINANCIERA (PostgreSQL — schema silver, referencias gold)
 
 REGLAS GLOBALES:
-- Filtra SIEMPRE por customer_id en tablas silver y vistas gold (incluye vw_kpis_financiero y vw_ventas_netas_mes).
-- PREFERIR gold.vw_kpis_financiero cuando la pregunta sea de KPIs/ratios/estado de resultados agregado
-  (utilidad, márgenes, ROE, ROA, liquidez, endeudamiento, semáforos, activo/pasivo/patrimonio totales).
+- Filtra SIEMPRE por customer_id en tablas silver y vistas gold.
+- PREFERIR gold.vw_fact_bdp_enriched para montos contables, P&L, balance y tableros (BDP + rubros unidos).
+- PREFERIR gold.vw_dim_accounts SOLO para catálogo de cuentas/rubros SIN montos.
+- PREFERIR gold.vw_kpis_financiero SOLO para ratios pre-calculados (ROE, ROA, liquidez, semáforos agregados).
 - PREFERIR gold.vw_ventas_netas_mes para ventas netas/brutas mensuales (facturación − notas crédito).
 - dim_customers.customer_id es varchar (identificador de negocio), NO confundir con uuid customer_id de hechos.
 - fact_bdp.id_tiempo referencia gold.dim_time(id_time) — SOLO fact_bdp; fact_venta NO tiene id_tiempo.
@@ -98,28 +99,47 @@ Reglas de filtrado temporal:
 - Usa literales DATE 'YYYY-MM-DD' o anio_mes 'YYYY-MM'; evita funciones no deterministas innecesarias.
 
 ──────────────────────────────────────────────────────────────────────────────
-0. gold.vw_dim_accounts — vista principal tableros (CONSULTAR PRIMERO)
+0. gold.vw_fact_bdp_enriched — BDP + rubros + tiempo (CONSULTAR PRIMERO para montos)
 ──────────────────────────────────────────────────────────────────────────────
-Vista gold. Plan de cuentas enriquecido con rubros; misma fuente organizada que tableros y Power BI.
-Grain: customer_id + id_auxiliar (cuenta auxiliar).
+Vista gold. fact_bdp enriquecido con gold.vw_dim_accounts + gold.dim_time.
+Misma lógica que Power BI (dim + fact pre-unido). Grain: customer_id + id_auxiliar + id_tiempo.
+
+Columnas clave:
+- customer_id           uuid — filtrar SIEMPRE
+- nombre_cliente        varchar — atributo
+- codigo_cuenta_contable / id_auxiliar, nombre_auxiliar, nombre_cuenta
+- id_rubro, nombre_rubro_grupo, nombre_rubro_clase, uso
+- nodo_s1, nodo_s2, sub_nodo_s3, cod_nodo — jerarquía tablero por cliente
+- mvto, saldo_inicial, saldo_final, movimiento_debito, movimiento_credito
+- anio_mes ('YYYY-MM'), anio, mes_corto, trimestre, fecha, source_date
+
+Filtro: customer_id = uuid del tenant.
+Agregación típica: SUM(mvto) o SUM(saldo_final) GROUP BY nodo_s1, nombre_rubro_grupo, anio_mes.
+Fallback silver: silver.fact_bdp.
+
+──────────────────────────────────────────────────────────────────────────────
+0b. gold.vw_dim_accounts — catálogo plan de cuentas (SIN montos)
+──────────────────────────────────────────────────────────────────────────────
+Vista gold. Plan de cuentas enriquecido con rubros/nodos; misma lógica CASE que tableros Power BI.
+NO tiene mvto ni saldo — solo estructura. Grain: customer_id + id_auxiliar.
 
 Columnas:
 - customer_id           uuid — filtrar SIEMPRE por este campo
 - nombre_cliente        varchar — atributo (no usar para filtrar)
-- integration_id        uuid
 - id_auxiliar           varchar — código auxiliar / cuenta contable
 - nombre_auxiliar       varchar
-- id_subcuenta, nombre_subcuenta
-- id_cuenta, nombre_cuenta
-- id_grupo, nombre_grupo
-- id_clase, nombre_clase
-- nombre_rubro_grupo    varchar — rubro para agrupación (KPIs, balance)
-- nombre_rubro_clase    varchar — clase contable (Activo, Pasivo, Patrimonio, …)
-- load_ts, source_table
+- id_subcuenta, nombre_subcuenta, id_cuenta, nombre_cuenta
+- id_grupo, nombre_grupo, id_clase, nombre_clase
+- id_rubro              int — agrupación contable
+- nombre_rubro_grupo    varchar — rubro KPI (Activo Corriente, Ingresos Operacionales, …)
+- nombre_rubro_clase    varchar — Activo, Pasivo, Patrimonio, Ingresos, Gasto, …
+- uso                   varchar — BG (balance) o ER (estado de resultados)
+- nodo_s1, nodo_s2, sub_nodo_s3, cod_nodo — nodos tablero por cliente
 
 Filtro: customer_id = uuid del tenant.
 
-Uso: primera vista a consultar; plan de cuentas; rubros; preguntas generales de tableros.
+Uso: catálogo de cuentas, rubros, nodos; preguntas SIN montos.
+Para montos usar gold.vw_fact_bdp_enriched.
 Fallback silver: silver.dim_accounts.
 
 ──────────────────────────────────────────────────────────────────────────────

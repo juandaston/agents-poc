@@ -184,6 +184,16 @@ def qualified_sources(tables: list[str], schema: str) -> list[str]:
     return [qualified_source(t, schema) for t in tables]
 
 
+def build_dim_catalog_question_pattern(catalog: dict[str, Any] | None = None) -> re.Pattern[str]:
+    cat = catalog or load_catalog()
+    routing = cat.get("routing") or {}
+    keywords = routing.get("dim_catalog_keywords") or [
+        "plan de cuentas",
+        "plan contable",
+    ]
+    return _keywords_to_pattern(keywords)
+
+
 def build_tablero_question_pattern(catalog: dict[str, Any] | None = None) -> re.Pattern[str]:
     cat = catalog or load_catalog()
     routing = cat.get("routing") or {}
@@ -340,11 +350,17 @@ def try_heuristic_route(question: str, catalog: dict[str, Any] | None = None) ->
             "tables": ["vw_ventas_netas_mes"],
             "reason": "heuristic: ventas netas / notas crédito",
         }
+    if build_dim_catalog_question_pattern(catalog).search(q):
+        return {
+            "intent": "cuentas",
+            "tables": ["vw_dim_accounts"],
+            "reason": "heuristic: catálogo plan de cuentas (vw_dim_accounts, sin montos)",
+        }
     if build_tablero_question_pattern(catalog).search(q):
         return {
             "intent": "mixto",
             "tables": [get_primary_entity_key(catalog)],
-            "reason": "heuristic: tablero / P&L / rubros (vw_dim_accounts)",
+            "reason": "heuristic: tablero / P&L / montos (vw_fact_bdp_enriched)",
         }
     if build_kpi_question_pattern(catalog).search(q):
         return {
@@ -356,7 +372,7 @@ def try_heuristic_route(question: str, catalog: dict[str, Any] | None = None) ->
         return {
             "intent": "balance",
             "tables": [get_primary_entity_key(catalog)],
-            "reason": "heuristic: balance / plan de cuentas / tablero (vw_dim_accounts)",
+            "reason": "heuristic: balance / movimientos / saldos (vw_fact_bdp_enriched)",
         }
     if build_presupuesto_question_pattern(catalog).search(q):
         return {

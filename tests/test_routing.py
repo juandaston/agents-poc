@@ -12,8 +12,14 @@ def test_try_heuristic_route_kpis():
 def test_try_heuristic_route_tablero_ingresos():
     route = try_heuristic_route("dame ingresos operacionales")
     assert route is not None
+    assert route["tables"] == ["vw_fact_bdp_enriched"]
+    assert "tablero" in route["reason"] or "montos" in route["reason"]
+
+
+def test_try_heuristic_route_dim_catalog():
+    route = try_heuristic_route("muéstrame el plan de cuentas")
+    assert route is not None
     assert route["tables"] == ["vw_dim_accounts"]
-    assert "tablero" in route["reason"]
 
 
 def test_try_heuristic_route_ventas_netas():
@@ -25,7 +31,7 @@ def test_try_heuristic_route_ventas_netas():
 def test_try_heuristic_route_balance():
     route = try_heuristic_route("¿Cuál es el saldo final total del balance de prueba?")
     assert route is not None
-    assert route["tables"] == ["vw_dim_accounts"]
+    assert route["tables"] == ["vw_fact_bdp_enriched"]
     assert route["intent"] == "balance"
 
 

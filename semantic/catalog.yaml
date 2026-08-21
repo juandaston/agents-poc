@@ -2,14 +2,14 @@
 # Consumidores: agents-poc (text-to-SQL), core/analytics (allowlist gold).
 version: 1
 
-primary_entity: vw_dim_accounts
+primary_entity: vw_fact_bdp_enriched
 kpi_entity: vw_kpis_financiero
 gold_schema: gold
 
 global_rules:
   - Filtra SIEMPRE por customer_id en tablas silver y vistas gold.
-  - PREFERIR gold.vw_dim_accounts como PRIMERA vista a consultar (datos organizados de tableros; misma fuente que dashboards).
-  - PREFERIR gold.vw_dim_accounts para ingresos, utilidades, costos, gastos y estado de resultados (rubros ya filtrados en tablero).
+  - PREFERIR gold.vw_fact_bdp_enriched para montos contables (mvto, saldos), P&L, balance y tableros (fact_bdp + rubros ya unidos).
+  - PREFERIR gold.vw_dim_accounts SOLO para catálogo de cuentas / jerarquía SIN montos (no tiene mvto ni saldo).
   - PREFERIR gold.vw_kpis_financiero SOLO para ratios pre-calculados (ROE, ROA, liquidez, endeudamiento) cuando la pregunta lo pida explícitamente.
   - PREFERIR gold.vw_ventas_netas_mes para ventas netas/brutas mensuales (facturación − notas crédito).
   - PREFERIR gold.vw_ventas_por_producto_mes para mix, top productos y ventas por producto.
@@ -31,14 +31,30 @@ entities:
     qualified_name: gold.vw_dim_accounts
     layer: gold
     kind: view
-    description: Vista principal tableros — plan de cuentas enriquecido con rubros contables (datos organizados por cliente)
-    prefer_for: [tablero, cuentas, rubros, plan contable, auxiliar, subcuenta, grupo, clase, balance, movimientos, ingresos, utilidad, costos, gastos, estado de resultados, margen]
+    description: Catálogo plan de cuentas + rubros/nodos por cliente (sin montos; solo estructura)
+    prefer_for: [plan contable, catálogo cuentas, jerarquía contable, rubros, nodos, auxiliar, subcuenta]
     customer_filter: customer_id
     grain: [customer_id, id_auxiliar]
     silver_fallback: [dim_accounts]
     metrics:
       jerarquia: [id_auxiliar, nombre_auxiliar, id_subcuenta, nombre_subcuenta, id_cuenta, nombre_cuenta, id_grupo, nombre_grupo, id_clase, nombre_clase]
-      rubros: [nombre_rubro_grupo, nombre_rubro_clase]
+      rubros: [id_rubro, nombre_rubro_grupo, nombre_rubro_clase, uso, nodo_s1, nodo_s2, sub_nodo_s3, cod_nodo]
+
+  vw_fact_bdp_enriched:
+    route_key: vw_fact_bdp_enriched
+    qualified_name: gold.vw_fact_bdp_enriched
+    layer: gold
+    kind: view
+    description: BDP enriquecido — movimientos/saldos + rubros tablero (misma lógica Power BI dim+fact)
+    prefer_for: [tablero, ingresos, utilidad, costos, gastos, margen, balance, movimientos, saldo, mvto, estado de resultados]
+    customer_filter: customer_id
+    time_columns: [anio_mes, anio, fecha, source_date, mes_corto]
+    grain: [customer_id, id_auxiliar, id_tiempo]
+    silver_fallback: [fact_bdp]
+    metrics:
+      montos: [mvto, saldo_inicial, saldo_final, movimiento_debito, movimiento_credito]
+      rubros: [nombre_rubro_grupo, nombre_rubro_clase, nodo_s1, nodo_s2, sub_nodo_s3, cod_nodo, uso]
+      tiempo: [anio_mes, anio, mes_corto, trimestre, fecha, source_date]
 
   vw_kpis_financiero:
     route_key: vw_kpis_financiero
@@ -186,6 +202,7 @@ entities:
 routing:
   intents: [kpis, ventas, balance, presupuesto, clientes, cuentas, mixto]
   router_order:
+    - vw_fact_bdp_enriched
     - vw_dim_accounts
     - vw_kpis_financiero
     - vw_semaforos_cliente
@@ -199,6 +216,16 @@ routing:
     - presupuesto_proyeccion
     - dim_customers
     - dim_accounts
+  dim_catalog_keywords:
+    - plan de cuentas
+    - plan contable
+    - catálogo de cuentas
+    - catalogo de cuentas
+    - lista de cuentas
+    - cuentas contables
+    - jerarquía contable
+    - jerarquia contable
+    - nodos del tablero
   tablero_keywords:
     - ingresos operacionales
     - ingresos
@@ -296,8 +323,9 @@ routing:
     - estado de semáforos
     - alertas financieras
   rules:
-    - Por defecto o preguntas generales / ambiguas → vw_dim_accounts (vista principal de tableros).
-    - Ingresos, utilidades, costos, gastos, márgenes, patrimonio → vw_dim_accounts (rubros del tablero).
+    - Por defecto o preguntas con montos / ambiguas contables → vw_fact_bdp_enriched.
+    - Catálogo de cuentas / jerarquía sin montos → vw_dim_accounts.
+    - Ingresos, utilidades, costos, gastos, márgenes, patrimonio, saldos → vw_fact_bdp_enriched (SUM mvto o saldo_final).
     - Ratios pre-calculados (ROE, ROA, liquidez, endeudamiento, apalancamiento) → vw_kpis_financiero.
     - Si pregunta solo semáforos del periodo más reciente → vw_semaforos_cliente.
     - Si pregunta ventas netas/brutas mensuales o facturación menos notas crédito → SOLO vw_ventas_netas_mes.
@@ -305,11 +333,12 @@ routing:
     - Si pregunta presupuesto vs real, cumplimiento o variación → vw_presupuesto_vs_real_mes.
     - Si pregunta último periodo/mes con datos → vw_ultimo_periodo_cliente.
     - Usa fact_venta solo si necesita líneas crudas no cubiertas por vw_ventas_por_producto_mes.
-    - Usa fact_bdp solo si vw_dim_accounts y vw_kpis_financiero no cubren el detalle granular.
+    - Usa fact_bdp solo si vw_fact_bdp_enriched no cubre el detalle granular.
     - Ventas + presupuesto en la misma pregunta → tablas mixtas.
 
 relationships:
-  - vw_dim_accounts es la vista gold principal para tableros (misma data organizada que Power BI / dashboards).
+  - vw_fact_bdp_enriched = fact_bdp + vw_dim_accounts + dim_time (vista principal agente/tableros con montos).
+  - vw_dim_accounts es catálogo/rubros por cliente (sin montos); misma lógica CASE que Power BI.
   - fact_bdp.codigo_cuenta_contable ↔ vw_dim_accounts.id_auxiliar (mismo customer_id)
   - fact_bdp.codigo_cuenta_contable ↔ dim_accounts.id_auxiliar (mismo customer_id)
   - fact_bdp.id_tiempo ↔ gold.dim_time.id_time

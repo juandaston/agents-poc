@@ -108,10 +108,12 @@ def _maybe_route_to_kpis(question: str, route: dict) -> dict:
 
 
 def _maybe_route_to_tablero(question: str, route: dict) -> dict:
-    """P&L / tablero → vw_dim_accounts (evita vw_kpis_financiero cuando falla)."""
+    """P&L / tablero con montos → vw_fact_bdp_enriched."""
     primary_table = _primary_table()
     tables = route.get("tables") or []
     if primary_table in tables:
+        return route
+    if tables == ["vw_dim_accounts"]:
         return route
     if not _tablero_question_re().search(question or ""):
         return route
@@ -182,11 +184,12 @@ Tablas / vistas disponibles:
 REGLAS DE ENRUTAMIENTO:
 {build_routing_rules_block()}
 - Si implica filtro por fechas, mes, año o periodo, menciónalo en "reason"
-  (vw_dim_accounts → sin columna temporal propia; vw_kpis_financiero → anio / anio_mes;
+  (vw_fact_bdp_enriched → anio_mes / anio / source_date; vw_dim_accounts → sin montos ni tiempo;
+  vw_kpis_financiero → anio / anio_mes;
   fact_bdp → source_date o gold.dim_time; presupuesto → anio_mes;
   ventas netas/brutas mensuales → vw_ventas_netas_mes.anio_mes;
   ventas detalle → fact_venta.invoice_date).
-- Si la intención es ambigua o general, enruta a vw_dim_accounts (vista principal tableros).
+- Si la intención es ambigua o pide montos contables, enruta a vw_fact_bdp_enriched.
 
 RESPONDE SOLO JSON así:
 
@@ -250,16 +253,47 @@ DESCRIPCIÓN:
 {table_map.get(table, "")}
 
 REGLAS (OBLIGATORIAS):
-- SOLO SELECT sobre gold.vw_dim_accounts (vista principal de tableros, sin JOINs)
+- SOLO SELECT sobre gold.vw_dim_accounts (catálogo / rubros, SIN montos — no tiene mvto ni saldo)
 - SIEMPRE filtra por customer_id = '{CUSTOMER_ID_PLACEHOLDER}'
-- Columnas clave: id_auxiliar, nombre_auxiliar, nombre_cuenta, nombre_grupo, nombre_clase,
-  nombre_rubro_grupo, nombre_rubro_clase
-- Usa esta vista para plan de cuentas, rubros, jerarquía contable y métricas del tablero
-  (ingresos operacionales, utilidades, costos, gastos — filtra por nombre_rubro_grupo / rubro según la pregunta)
-- NO uses vw_kpis_financiero ni fact_bdp si esta vista responde la pregunta
-- Selecciona solo columnas relevantes (evita SELECT * salvo resumen de catálogo)
-- Ordena por id_auxiliar o nombre_rubro_grupo según la pregunta
+- Columnas: id_auxiliar, nombre_auxiliar, nombre_cuenta, nombre_grupo, nombre_clase,
+  id_rubro, nombre_rubro_grupo, nombre_rubro_clase, uso, nodo_s1, nodo_s2, sub_nodo_s3, cod_nodo
+- Usa esta vista SOLO para listar cuentas, rubros o jerarquía contable
+- Si la pregunta pide montos/totales/saldos → NO uses esta vista (usa gold.vw_fact_bdp_enriched)
+- Selecciona solo columnas relevantes (evita SELECT *)
+- Ordena por id_auxiliar o nodo_s1 según la pregunta
 - máximo 100 filas
+
+PREGUNTA:
+{question}
+
+Devuelve SOLO SQL.
+"""
+    elif table == "vw_fact_bdp_enriched":
+        prompt = f"""
+Eres un experto en SQL PostgreSQL financiero.
+
+{schema_ctx}
+
+VISTA ACTUAL:
+gold.vw_fact_bdp_enriched
+
+DESCRIPCIÓN:
+{table_map.get(table, "")}
+
+REGLAS (OBLIGATORIAS):
+- SOLO SELECT sobre gold.vw_fact_bdp_enriched (una sola vista, sin JOINs)
+- SIEMPRE filtra por customer_id = '{CUSTOMER_ID_PLACEHOLDER}'
+- Montos: mvto (movimiento), saldo_final, saldo_inicial, movimiento_debito, movimiento_credito
+- Rubros tablero: nombre_rubro_grupo, nombre_rubro_clase, nodo_s1, nodo_s2, sub_nodo_s3, cod_nodo, uso
+- Cuenta: id_auxiliar, codigo_cuenta_contable, nombre_auxiliar, nombre_cuenta
+- FECHAS: anio_mes ('YYYY-MM'), anio (int), fecha, source_date
+  - Mes: WHERE anio_mes = '2026-06'
+  - Año: WHERE anio = 2026 OR anio_mes LIKE '2026-%'
+  - Último periodo: ORDER BY anio DESC, anio_mes DESC LIMIT 1 (subconsulta o CTE si agregas)
+- Para totales por rubro: SUM(mvto) o SUM(saldo_final) GROUP BY nombre_rubro_grupo, nodo_s1, anio_mes
+- Ingresos operacionales: filtra nombre_rubro_grupo = 'Ingresos Operacionales' o nodo_s1 según cliente
+- NO uses vw_kpis_financiero ni fact_bdp directo; esta vista ya une BDP + rubros + tiempo
+- Selecciona solo columnas relevantes; máximo 100 filas
 
 PREGUNTA:
 {question}
