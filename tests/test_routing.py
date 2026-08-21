@@ -1,5 +1,45 @@
 from semantic_loader import try_heuristic_route
 from llm_client import resolve_fast_model, DEFAULT_FAST_OPENAI_MODEL
+from sql_agent import (
+    _account_search_patterns,
+    _maybe_route_to_ventas_enriched,
+    _validate_sql_for_route,
+)
+
+
+def test_try_heuristic_route_devoluciones():
+    route = try_heuristic_route("¿Cuáles fueron las devoluciones en enero 2026?")
+    assert route is not None
+    assert route["tables"] == ["vw_fact_bdp_enriched"]
+    assert "devoluciones" in route["reason"].lower()
+
+
+def test_account_search_skips_cuales():
+    patterns = _account_search_patterns("¿Cuáles fueron las devoluciones en enero 2026?")
+    assert "%cuales%" not in patterns
+    assert "%devoluc%" in patterns
+
+
+def test_validate_sql_for_route_rejects_silver():
+    sql = (
+        "SELECT SUM(f.total) FROM silver.fact_nota_credito f "
+        "WHERE f.customer_id = 'x'"
+    )
+    try:
+        _validate_sql_for_route(sql, "vw_fact_bdp_enriched")
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "fact_nota_credito" in str(exc)
+
+
+def test_maybe_route_ventas_skips_pure_devoluciones():
+    route = {"tables": ["vw_fact_bdp_enriched"], "reason": "primary"}
+    out = _maybe_route_to_ventas_enriched(
+        "¿Cuáles fueron las devoluciones en enero 2026?",
+        route,
+    )
+    assert out is route
+    assert "Ingresos Operacionales" not in str(out)
 
 
 def test_try_heuristic_route_kpis():

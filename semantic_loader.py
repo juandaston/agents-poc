@@ -223,6 +223,13 @@ def build_kpi_question_pattern(catalog: dict[str, Any] | None = None) -> re.Patt
     return re.compile(rf"\b({'|'.join(parts)})\b", re.IGNORECASE)
 
 
+def build_devoluciones_question_pattern(catalog: dict[str, Any] | None = None) -> re.Pattern[str]:
+    cat = catalog or load_catalog()
+    routing = cat.get("routing") or {}
+    keywords = routing.get("devoluciones_keywords") or []
+    return _keywords_to_pattern(keywords, word_boundary=False)
+
+
 def build_ventas_netas_question_pattern(catalog: dict[str, Any] | None = None) -> re.Pattern[str]:
     cat = catalog or load_catalog()
     routing = cat.get("routing") or {}
@@ -343,6 +350,12 @@ def try_heuristic_route(question: str, catalog: dict[str, Any] | None = None) ->
             "intent": "presupuesto",
             "tables": ["vw_presupuesto_vs_real_mes"],
             "reason": "heuristic: presupuesto vs real / cumplimiento",
+        }
+    if build_devoluciones_question_pattern(catalog).search(q):
+        return {
+            "intent": "ventas",
+            "tables": [get_primary_entity_key(catalog)],
+            "reason": "heuristic: devoluciones / notas crédito → vw_fact_bdp_enriched",
         }
     if build_ventas_netas_question_pattern(catalog).search(q):
         return {

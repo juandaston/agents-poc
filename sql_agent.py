@@ -88,6 +88,10 @@ def _maybe_route_to_ventas_enriched(question: str, route: dict) -> dict:
         r"\b(ventas?|facturaci[oó]n)\b", question or "", re.I
     ):
         return route
+    if _DEVOLUCIONES_RE.search(question or "") and not re.search(
+        r"\b(ventas?|facturaci[oó]n)\b", question or "", re.I
+    ):
+        return route
     logger.info(
         "ventas keywords detected; overriding route to %s (Ingresos Operacionales)",
         primary,
@@ -277,7 +281,27 @@ _QUESTION_STOPWORDS = frozenset({
     "ingreso", "costos", "costo", "ventas", "utilidad", "activo", "pasivo",
     "patrimonio", "gastamos", "gastó", "gasto", "hubo", "tuvo", "fueron",
     "cuanto", "cuánto", "dame", "dime", "mostrar", "mostrar", "consultar",
+    "cuales", "cuáles", "habia", "había", "sido", "estuvo",
 })
+
+_DEVOLUCIONES_RE = re.compile(
+    r"\b(devoluci[oó]n(?:es)?|notas?\s+cr[eé]dito)\b",
+    re.IGNORECASE,
+)
+
+_ENRICHED_FORBIDDEN_IN_SQL = (
+    "fact_nota_credito",
+    "fact_venta",
+    "fact_bdp",
+    "vw_ventas_netas_mes",
+    "vw_ventas_por_producto_mes",
+    "presupuesto_proyeccion",
+)
+
+_ACCOUNT_PHRASE_PATTERNS: list[tuple[tuple[str, ...], str]] = [
+    (("devoluciones", "devolución", "devolucion", "notas credito", "notas crédito"), "%devoluc%"),
+    (("materia prima", "materias primas"), "%materia%"),
+]
 
 _RUBRO_KEYWORD_PATTERNS: list[tuple[tuple[str, ...], str]] = [
     (("ventas", "venta", "facturacion", "facturación", "facturacion neta"), "%ingres%"),
@@ -294,9 +318,14 @@ _RUBRO_KEYWORD_PATTERNS: list[tuple[tuple[str, ...], str]] = [
 
 
 def _account_search_patterns(question: str) -> list[str]:
-    words = re.findall(r"[a-záéíóúñü]+", question.lower())
+    q = question.lower()
     patterns: list[str] = []
     seen: set[str] = set()
+    for phrases, pattern in _ACCOUNT_PHRASE_PATTERNS:
+        if any(phrase in q for phrase in phrases) and pattern not in seen:
+            patterns.append(pattern)
+            seen.add(pattern)
+    words = re.findall(r"[a-záéíóúñü]+", q)
     for word in words:
         if len(word) < 4 or word in _QUESTION_STOPWORDS:
             continue
@@ -461,7 +490,8 @@ DESCRIPCIÓN:
 {table_map.get(table, "")}
 
 REGLAS (OBLIGATORIAS):
-- SOLO SELECT sobre gold.vw_fact_bdp_enriched (una sola vista, sin JOINs)
+- SOLO SELECT sobre gold.vw_fact_bdp_enriched (una sola vista, sin JOINs, sin otras tablas)
+- PROHIBIDO: fact_nota_credito, fact_venta, fact_bdp, silver.*, vw_ventas_netas_mes
 - SIEMPRE filtra por customer_id = '{CUSTOMER_ID_PLACEHOLDER}'
 - Montos: mvto (movimiento), saldo_final, saldo_inicial, movimiento_debito, movimiento_credito
 - Cuenta (jerarquía PUC): id_auxiliar, nombre_auxiliar, id_cuenta, nombre_cuenta,
@@ -484,8 +514,12 @@ REGLAS (OBLIGATORIAS):
   3. Si hay lista de cuentas coincidentes arriba, usa el valor exacto más específico
   4. NO confundas concepto específico con rubro padre (seguros ≠ sumar todo Gasto Admon)
   5. nombre_rubro_grupo: valor exacto del catálogo; no pluralizar ('Gasto Financiero', no 'Gastos Financieros')
-  6. Ventas / facturación / ingresos operacionales → nombre_rubro_grupo = 'Ingresos Operacionales' (SUM(mvto))
+  6. Ventas / facturación / ingresos operacionales (pregunta distinta a devoluciones) →
+     nombre_rubro_grupo = 'Ingresos Operacionales' (SUM(mvto))
      NO uses vw_ventas_netas_mes salvo detalle facturación Siigo por producto
+  7. Devoluciones / notas crédito (solo si la pregunta es sobre devoluciones, no ventas) →
+     nombre_cuenta o nombre_auxiliar ILIKE '%devoluc%' (SUM(mvto))
+     NO uses fact_nota_credito ni nombre_rubro_grupo = 'Ingresos Operacionales'
 - Para totales: SUM(mvto) — NUNCA ABS(mvto) ni SUM(ABS(mvto))
   - SELECT típico agregado: anio_mes, SUM(mvto) AS total (y dimensiones del GROUP BY)
   - Si usas GROUP BY, en SELECT SOLO columnas del GROUP BY + funciones agregadas (SUM, COUNT, MAX…)
@@ -754,7 +788,29 @@ Devuelve SOLO SQL.
 
     sql = apply_customer_id_placeholder(sql, customer_id)
 
-    validated = validate_sql(sql)
+    try:
+        validated = validate_sql(sql)
+        _validate_sql_for_route(validated, table)
+    except ValueError as exc:
+        if table == "vw_fact_bdp_enriched" and not retry_note:
+            logger.warning(
+                "sql route validation failed table=%s error=%s; retrying",
+                table,
+                exc,
+            )
+            return generate_sql(
+                question,
+                table,
+                customer_id,
+                schema,
+                agent,
+                retry_note=f"{_ENRICHED_SQL_WRONG_SOURCE_RETRY_NOTE} ({exc})",
+                rubro_hints=rubro_hints,
+                history_block=history_block,
+                temporal_hints=temporal_hints,
+            )
+        raise Exception(f"SQL inválido para {table}: {exc}") from exc
+
     logger.info(
         "sql generated table=%s elapsed_ms=%s len=%s",
         table,
@@ -775,6 +831,24 @@ _ENRICHED_SQL_GROUPBY_RETRY_NOTE = (
     "Error GROUP BY: en SELECT usa SOLO columnas del GROUP BY más SUM(mvto) (o COUNT). "
     "No incluyas saldo_inicial, saldo_final, movimiento_debito ni movimiento_credito sin agregar."
 )
+
+_ENRICHED_SQL_WRONG_SOURCE_RETRY_NOTE = (
+    "Debes consultar SOLO gold.vw_fact_bdp_enriched. "
+    "PROHIBIDO fact_nota_credito, fact_venta y cualquier tabla silver. "
+    "Devoluciones: FROM gold.vw_fact_bdp_enriched WHERE nombre_auxiliar ILIKE '%devoluc%' "
+    "o nombre_cuenta ILIKE '%devoluc%'; filtro temporal con anio_mes; SUM(mvto)."
+)
+
+
+def _validate_sql_for_route(sql: str, table: str) -> None:
+    norm = (sql or "").lower()
+    if table != "vw_fact_bdp_enriched":
+        return
+    if "vw_fact_bdp_enriched" not in norm:
+        raise ValueError("SQL debe usar gold.vw_fact_bdp_enriched")
+    for forbidden in _ENRICHED_FORBIDDEN_IN_SQL:
+        if forbidden in norm:
+            raise ValueError(f"SQL no debe usar {forbidden}")
 
 
 def _sql_error_kind(exc: Exception) -> str | None:
