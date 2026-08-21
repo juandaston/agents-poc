@@ -25,7 +25,7 @@ def test_try_heuristic_route_dim_catalog():
 def test_try_heuristic_route_ventas_netas():
     route = try_heuristic_route("Resume las ventas netas por mes")
     assert route is not None
-    assert route["tables"] == ["vw_ventas_netas_mes"]
+    assert route["tables"] == ["vw_fact_bdp_enriched"]
 
 
 def test_try_heuristic_route_balance():

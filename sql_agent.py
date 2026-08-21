@@ -76,20 +76,28 @@ def _tablero_question_re() -> re.Pattern[str]:
     return build_tablero_question_pattern()
 
 
-def _maybe_route_to_ventas_netas(question: str, route: dict) -> dict:
-    """Ventas netas/brutas mensuales → vw_ventas_netas_mes."""
-    view = "vw_ventas_netas_mes"
+def _maybe_route_to_ventas_enriched(question: str, route: dict) -> dict:
+    """Ventas / facturación → vw_fact_bdp_enriched (Ingresos Operacionales), igual que Power BI."""
+    primary = _primary_table()
     tables = route.get("tables") or []
-    if view in tables:
+    if tables == ["vw_ventas_por_producto_mes"]:
         return route
-    if not _ventas_netas_question_re().search(question or ""):
+    if primary in tables and "vw_ventas_netas_mes" not in tables:
         return route
-    logger.info("ventas netas keywords detected; overriding route to %s", view)
+    if not _ventas_netas_question_re().search(question or "") and not re.search(
+        r"\b(ventas?|facturaci[oó]n)\b", question or "", re.I
+    ):
+        return route
+    logger.info(
+        "ventas keywords detected; overriding route to %s (Ingresos Operacionales)",
+        primary,
+    )
     return {
         **route,
-        "tables": [view],
+        "tables": [primary],
         "intent": "ventas",
-        "reason": (route.get("reason") or "") + f" [auto: ventas netas → {view}]",
+        "reason": (route.get("reason") or "")
+        + f" [auto: ventas → {primary} / nombre_rubro_grupo Ingresos Operacionales]",
     }
 
 
@@ -200,7 +208,8 @@ REGLAS DE ENRUTAMIENTO:
   (vw_fact_bdp_enriched → anio_mes / anio / source_date; vw_dim_accounts → sin montos ni tiempo;
   vw_kpis_financiero → anio / anio_mes;
   fact_bdp → source_date o gold.dim_time; presupuesto → anio_mes;
-  ventas netas/brutas mensuales → vw_ventas_netas_mes.anio_mes;
+  ventas netas/brutas mensuales → vw_fact_bdp_enriched (nombre_rubro_grupo = Ingresos Operacionales);
+  ventas detalle por producto → vw_ventas_por_producto_mes.anio_mes;
   ventas detalle → fact_venta.invoice_date).
 - Si la intención es ambigua o pide montos contables, enruta a vw_fact_bdp_enriched.
 {history_section}
@@ -271,6 +280,7 @@ _QUESTION_STOPWORDS = frozenset({
 })
 
 _RUBRO_KEYWORD_PATTERNS: list[tuple[tuple[str, ...], str]] = [
+    (("ventas", "venta", "facturacion", "facturación", "facturacion neta"), "%ingres%"),
     (("gasto financiero", "gastos financieros", "financier"), "%financier%"),
     (("gasto admon", "gastos admin", "administrativ"), "%admin%"),
     (("ingreso operacional", "ingresos operacionales", "ingresos"), "%ingres%"),
@@ -474,6 +484,8 @@ REGLAS (OBLIGATORIAS):
   3. Si hay lista de cuentas coincidentes arriba, usa el valor exacto más específico
   4. NO confundas concepto específico con rubro padre (seguros ≠ sumar todo Gasto Admon)
   5. nombre_rubro_grupo: valor exacto del catálogo; no pluralizar ('Gasto Financiero', no 'Gastos Financieros')
+  6. Ventas / facturación / ingresos operacionales → nombre_rubro_grupo = 'Ingresos Operacionales' (SUM(mvto))
+     NO uses vw_ventas_netas_mes salvo detalle facturación Siigo por producto
 - Para totales: SUM(mvto) — NUNCA ABS(mvto) ni SUM(ABS(mvto))
   - SELECT típico agregado: anio_mes, SUM(mvto) AS total (y dimensiones del GROUP BY)
   - Si usas GROUP BY, en SELECT SOLO columnas del GROUP BY + funciones agregadas (SUM, COUNT, MAX…)
@@ -976,7 +988,7 @@ def run_financial_query(
         )
 
     route = route_question(effective_question, agent, history_block=history_block)
-    route = _maybe_route_to_ventas_netas(effective_question, route)
+    route = _maybe_route_to_ventas_enriched(effective_question, route)
     route = _maybe_route_to_tablero(effective_question, route)
     route = _maybe_route_to_kpis(effective_question, route)
     route = _prefer_kpi_view(route)

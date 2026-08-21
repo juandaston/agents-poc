@@ -5,7 +5,8 @@ REGLAS GLOBALES:
 - PREFERIR gold.vw_fact_bdp_enriched para montos contables, P&L, balance y tableros (BDP + rubros unidos).
 - PREFERIR gold.vw_dim_accounts SOLO para catálogo de cuentas/rubros SIN montos.
 - PREFERIR gold.vw_kpis_financiero SOLO para ratios pre-calculados (ROE, ROA, liquidez, semáforos agregados).
-- PREFERIR gold.vw_ventas_netas_mes para ventas netas/brutas mensuales (facturación − notas crédito).
+- PREFERIR gold.vw_fact_bdp_enriched para ventas/facturación/ingresos operacionales (nombre_rubro_grupo = 'Ingresos Operacionales').
+- vw_ventas_netas_mes solo para detalle facturación Siigo (bruto − NC), no para ventas del tablero contable.
 - dim_customers.customer_id es varchar (identificador de negocio), NO confundir con uuid customer_id de hechos.
 - fact_bdp.id_tiempo referencia gold.dim_time(id_time) — SOLO fact_bdp; fact_venta NO tiene id_tiempo.
 - fact_venta: filtrar fechas SOLO con invoice_date o load_ts en silver.fact_venta. NO JOIN a gold.dim_time_sales ni gold.dim_time.

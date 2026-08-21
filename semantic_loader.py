@@ -347,8 +347,8 @@ def try_heuristic_route(question: str, catalog: dict[str, Any] | None = None) ->
     if build_ventas_netas_question_pattern(catalog).search(q):
         return {
             "intent": "ventas",
-            "tables": ["vw_ventas_netas_mes"],
-            "reason": "heuristic: ventas netas / notas crédito",
+            "tables": [get_primary_entity_key(catalog)],
+            "reason": "heuristic: ventas / facturación → vw_fact_bdp_enriched (Ingresos Operacionales)",
         }
     if build_dim_catalog_question_pattern(catalog).search(q):
         return {
