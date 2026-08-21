@@ -219,6 +219,74 @@ def run_sql(query: str, schema: str, source: str | None = None):
         conn.close()
 
 
+def fetch_cuenta_candidates(
+    customer_id: str,
+    ilike_patterns: list[str],
+    *,
+    limit: int = 30,
+) -> list[dict[str, str]]:
+    """Matching sub-accounts from gold.vw_dim_accounts for granular SQL filters."""
+    if not ilike_patterns:
+        return []
+    logger.info(
+        "fetching cuenta candidates customer_id=%s patterns=%s",
+        customer_id,
+        ilike_patterns,
+    )
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        per_pattern = (
+            "(nombre_cuenta ILIKE %s OR nombre_auxiliar ILIKE %s "
+            "OR sub_nodo_s3 ILIKE %s OR nombre_subcuenta ILIKE %s)"
+        )
+        conditions = " OR ".join(per_pattern for _ in ilike_patterns)
+        params: list = [customer_id]
+        for pattern in ilike_patterns:
+            params.extend([pattern, pattern, pattern, pattern])
+        params.append(limit)
+        cur.execute(
+            f"""
+            SELECT DISTINCT
+                COALESCE(nombre_cuenta, '') AS nombre_cuenta,
+                COALESCE(nombre_auxiliar, '') AS nombre_auxiliar,
+                COALESCE(sub_nodo_s3, '') AS sub_nodo_s3,
+                COALESCE(nombre_rubro_grupo, '') AS nombre_rubro_grupo
+            FROM gold.vw_dim_accounts
+            WHERE customer_id = %s::uuid
+              AND ({conditions})
+            ORDER BY 1, 2, 3
+            LIMIT %s
+            """,
+            params,
+        )
+        rows: list[dict[str, str]] = []
+        for row in cur.fetchall():
+            rows.append(
+                {
+                    "nombre_cuenta": str(row[0]).strip(),
+                    "nombre_auxiliar": str(row[1]).strip(),
+                    "sub_nodo_s3": str(row[2]).strip(),
+                    "nombre_rubro_grupo": str(row[3]).strip(),
+                }
+            )
+        logger.info(
+            "cuenta candidates customer_id=%s count=%s",
+            customer_id,
+            len(rows),
+        )
+        return rows
+    except Exception:
+        logger.exception(
+            "failed to fetch cuenta candidates customer_id=%s",
+            customer_id,
+        )
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
 def fetch_nombre_rubro_grupo_candidates(
     customer_id: str,
     ilike_patterns: list[str] | None = None,

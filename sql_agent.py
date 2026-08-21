@@ -3,7 +3,13 @@ import json
 import logging
 import time
 from utils import has_real_data
-from db import run_sql, get_agent, get_customer_name, fetch_nombre_rubro_grupo_candidates
+from db import (
+    run_sql,
+    get_agent,
+    get_customer_name,
+    fetch_nombre_rubro_grupo_candidates,
+    fetch_cuenta_candidates,
+)
 from security import validate_sql
 from llm_client import complete_text, resolve_fast_model
 from data_privacy import (
@@ -224,6 +230,39 @@ Pregunta:
     return route
 
 
+_BROAD_RUBRO_PHRASES = (
+    "gastos administrativos",
+    "gasto administrativo",
+    "gastos de administración",
+    "gastos financieros",
+    "gasto financiero",
+    "ingresos operacionales",
+    "ingreso operacional",
+    "costos de ventas",
+    "costo de ventas",
+    "utilidad bruta",
+    "utilidad operacional",
+    "utilidad neta",
+    "activo corriente",
+    "activo total",
+    "pasivo corriente",
+    "patrimonio total",
+)
+
+_QUESTION_STOPWORDS = frozenset({
+    "cuanto", "cuánto", "total", "gasto", "gastos", "mes", "anio", "año",
+    "junio", "enero", "febrero", "marzo", "abril", "mayo", "julio", "agosto",
+    "septiembre", "octubre", "noviembre", "diciembre", "ultimo", "último",
+    "periodo", "cliente", "empresa", "valor", "montos", "saldo", "movimiento",
+    "fue", "son", "estan", "están", "cual", "cuál", "como", "cómo", "que", "qué",
+    "del", "de", "la", "el", "los", "las", "en", "por", "para", "con", "sin",
+    "administracion", "administración", "administrativos", "administrativo",
+    "financieros", "financiero", "operacionales", "operacional", "ingresos",
+    "ingreso", "costos", "costo", "ventas", "utilidad", "activo", "pasivo",
+    "patrimonio", "gastamos", "gastó", "gasto", "hubo", "tuvo", "fueron",
+    "cuanto", "cuánto", "dame", "dime", "mostrar", "mostrar", "consultar",
+})
+
 _RUBRO_KEYWORD_PATTERNS: list[tuple[tuple[str, ...], str]] = [
     (("gasto financiero", "gastos financieros", "financier"), "%financier%"),
     (("gasto admon", "gastos admin", "administrativ"), "%admin%"),
@@ -235,6 +274,27 @@ _RUBRO_KEYWORD_PATTERNS: list[tuple[tuple[str, ...], str]] = [
     (("pasivo corriente", "pasivo no corriente"), "%pasivo%"),
     (("patrimonio",), "%patrimonio%"),
 ]
+
+
+def _account_search_patterns(question: str) -> list[str]:
+    words = re.findall(r"[a-záéíóúñü]+", question.lower())
+    patterns: list[str] = []
+    seen: set[str] = set()
+    for word in words:
+        if len(word) < 4 or word in _QUESTION_STOPWORDS:
+            continue
+        pattern = f"%{word}%"
+        if pattern not in seen:
+            patterns.append(pattern)
+            seen.add(pattern)
+    return patterns[:5]
+
+
+def _is_broad_rubro_only_question(question: str) -> bool:
+    if _account_search_patterns(question):
+        return False
+    q = question.lower()
+    return any(phrase in q for phrase in _BROAD_RUBRO_PHRASES)
 
 
 def _rubro_search_patterns(question: str) -> list[str]:
@@ -255,13 +315,45 @@ def _build_rubro_hints_block(candidates: list[str]) -> str:
     return f"""
 VALORES nombre_rubro_grupo VÁLIDOS PARA ESTE CLIENTE (gold.vw_dim_accounts):
 {lines}
+- Usar SOLO cuando la pregunta pide el TOTAL de una línea amplia (ej. total gastos administrativos).
 - Filtra con nombre_rubro_grupo = 'valor exacto de la lista' (respeta mayúsculas y singular/plural).
 - NO inventes valores (ej. 'Gastos Financieros' si la lista dice 'Gasto Financiero').
-- NO uses nodo_s1 ni nombre_grupo en WHERE para conceptos P&L/balance.
 """
 
 
-def _resolve_rubro_hints(question: str, customer_id: str, *, broad: bool = False) -> str:
+def _build_cuenta_hints_block(candidates: list[dict[str, str]]) -> str:
+    if not candidates:
+        return ""
+    lines: list[str] = []
+    for row in candidates:
+        cuenta = row.get("nombre_cuenta") or "—"
+        aux = row.get("nombre_auxiliar") or "—"
+        sub = row.get("sub_nodo_s3") or "—"
+        rubro = row.get("nombre_rubro_grupo") or "—"
+        lines.append(
+            f"  - nombre_cuenta='{cuenta}', sub_nodo_s3='{sub}', "
+            f"nombre_auxiliar='{aux}' (rubro padre: {rubro})"
+        )
+    joined = "\n".join(lines)
+    return f"""
+CUENTAS/SUBCUENTAS COINCIDENTES PARA ESTE CLIENTE (gold.vw_dim_accounts):
+{joined}
+- La pregunta pide un concepto ESPECÍFICO → filtra por nombre_cuenta, sub_nodo_s3 o nombre_auxiliar.
+- NO uses solo nombre_rubro_grupo (ej. 'Gasto Admon') si piden seguros, arrendamiento, honorarios, etc.
+- Prefiere el valor exacto más específico: nombre_cuenta = 'Seguros' o nombre_auxiliar ILIKE '%Seguro%'.
+- El rubro padre (nombre_rubro_grupo) es contexto; no agregues todo el rubro salvo que lo pidan.
+"""
+
+
+def _resolve_enriched_hints(question: str, customer_id: str, *, broad: bool = False) -> str:
+    if not broad and not _is_broad_rubro_only_question(question):
+        account_patterns = _account_search_patterns(question)
+        if account_patterns:
+            cuentas = fetch_cuenta_candidates(customer_id, account_patterns)
+            cuenta_block = _build_cuenta_hints_block(cuentas)
+            if cuenta_block:
+                return cuenta_block
+
     patterns = None if broad else _rubro_search_patterns(question)
     if broad or not patterns:
         candidates = fetch_nombre_rubro_grupo_candidates(customer_id)
@@ -270,6 +362,10 @@ def _resolve_rubro_hints(question: str, customer_id: str, *, broad: bool = False
             customer_id, ilike_patterns=patterns
         )
     return _build_rubro_hints_block(candidates)
+
+
+def _resolve_rubro_hints(question: str, customer_id: str, *, broad: bool = False) -> str:
+    return _resolve_enriched_hints(question, customer_id, broad=broad)
 
 
 def generate_sql(
@@ -345,21 +441,25 @@ REGLAS (OBLIGATORIAS):
 - SOLO SELECT sobre gold.vw_fact_bdp_enriched (una sola vista, sin JOINs)
 - SIEMPRE filtra por customer_id = '{CUSTOMER_ID_PLACEHOLDER}'
 - Montos: mvto (movimiento), saldo_final, saldo_inicial, movimiento_debito, movimiento_credito
-- Rubros tablero: nombre_rubro_grupo, nombre_rubro_clase, nodo_s1, nodo_s2, sub_nodo_s3, cod_nodo, uso
-- Cuenta: id_auxiliar, codigo_cuenta_contable, nombre_auxiliar, nombre_cuenta
+- Cuenta (jerarquía PUC): id_auxiliar, nombre_auxiliar, id_cuenta, nombre_cuenta,
+  id_grupo, nombre_grupo, id_subcuenta, nombre_subcuenta
+- Rubros KPI tablero: nombre_rubro_grupo, nombre_rubro_clase, uso, sub_nodo_s3, nodo_s1, nodo_s2, cod_nodo
 - FECHAS: anio_mes ('YYYY-MM'), anio (int), fecha, source_date
   - Mes: WHERE anio_mes = '2026-06'
   - Año: WHERE anio = 2026 OR anio_mes LIKE '2026-%'
   - Último periodo: ORDER BY anio DESC, anio_mes DESC LIMIT 1 (subconsulta o CTE si agregas)
-- FILTROS TABLERO (CRÍTICO — igual que Power BI):
-  - SIEMPRE filtra por nombre_rubro_grupo (valor exacto del catálogo del cliente)
-  - Si hay lista de valores válidos arriba, usa nombre_rubro_grupo = 'valor exacto'
-  - Si no hay lista, nombre_rubro_grupo ILIKE '%palabra%' (ej. '%financier%', '%admin%', '%ingres%')
-  - NO uses nodo_s1 ni nombre_grupo en WHERE para conceptos P&L/balance
-  - NO pluralices ni inventes labels (ej. 'Gasto Financiero', no 'Gastos Financieros')
-  - Ejemplos típicos (verificar en catálogo): 'Gasto Financiero', 'Gasto Admon', 'Ingresos Operacionales'
-- Para totales mensuales: SUM(mvto) GROUP BY anio_mes, nombre_rubro_grupo
-  - NUNCA uses ABS(mvto) ni SUM(ABS(mvto)): mvto ya trae el signo contable; ABS distorsiona débitos/créditos y no cuadra con Power BI
+- JERARQUÍA DE FILTROS (CRÍTICO — elige el nivel según la pregunta):
+  1. Rubro KPI (nombre_rubro_grupo): SOLO cuando piden el TOTAL de una línea amplia
+     (ej. "total gastos administrativos", "gasto financiero del mes", "ingresos operacionales")
+  2. Sub-cuenta (nombre_cuenta, sub_nodo_s3, nombre_auxiliar): cuando piden un concepto ESPECÍFICO
+     dentro del rubro (ej. "seguros", "arrendamiento", "honorarios")
+     → nombre_cuenta = 'Seguros' OR nombre_auxiliar ILIKE '%Seguro%' (NO todo 'Gasto Admon')
+  3. Si hay lista de cuentas coincidentes arriba, usa el valor exacto más específico
+  4. NO confundas concepto específico con rubro padre (seguros ≠ sumar todo Gasto Admon)
+  5. nombre_rubro_grupo: valor exacto del catálogo; no pluralizar ('Gasto Financiero', no 'Gastos Financieros')
+- Para totales: SUM(mvto) — NUNCA ABS(mvto) ni SUM(ABS(mvto))
+  - Rubro amplio: GROUP BY anio_mes, nombre_rubro_grupo
+  - Sub-cuenta: GROUP BY anio_mes, nombre_cuenta (o sin GROUP BY si es un solo total)
   - NO incluyas fecha en GROUP BY si ya filtras un solo anio_mes
 - NO uses vw_kpis_financiero ni fact_bdp directo; esta vista ya une BDP + rubros + tiempo
 - Selecciona solo columnas relevantes; máximo 100 filas
@@ -637,8 +737,9 @@ Devuelve SOLO SQL.
 
 
 _ENRICHED_SQL_RETRY_NOTE = (
-    "Usa SOLO nombre_rubro_grupo con un valor EXACTO de la lista del catálogo "
-    "(no inventes plurales ni uses nodo_s1). GROUP BY anio_mes, nombre_rubro_grupo."
+    "0 filas: si la pregunta es concepto específico (seguros, arrendamiento…), filtra por "
+    "nombre_cuenta / sub_nodo_s3 / nombre_auxiliar, NO solo nombre_rubro_grupo. "
+    "Usa valores exactos del catálogo. SUM(mvto) sin ABS."
 )
 
 
@@ -669,7 +770,7 @@ def _consult_with_silver_fallback(
         )
         rubro_hints = None
         if table == "vw_fact_bdp_enriched":
-            rubro_hints = _resolve_rubro_hints(safe_question, customer_id)
+            rubro_hints = _resolve_enriched_hints(safe_question, customer_id)
         sql = generate_sql(
             safe_question,
             table,
@@ -686,7 +787,7 @@ def _consult_with_silver_fallback(
             logger.info(
                 "enriched query returned 0 rows; retrying with full nombre_rubro_grupo catalog"
             )
-            retry_hints = _resolve_rubro_hints(safe_question, customer_id, broad=True)
+            retry_hints = _resolve_enriched_hints(safe_question, customer_id, broad=True)
             retry_sql = generate_sql(
                 safe_question,
                 table,

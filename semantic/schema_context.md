@@ -107,22 +107,22 @@ Misma lógica que Power BI (dim + fact pre-unido). Grain: customer_id + id_auxil
 Columnas clave:
 - customer_id           uuid — filtrar SIEMPRE
 - nombre_cliente        varchar — atributo
-- codigo_cuenta_contable / id_auxiliar, nombre_auxiliar, nombre_cuenta
+- codigo_cuenta_contable / id_auxiliar, nombre_auxiliar, nombre_cuenta, nombre_grupo, nombre_subcuenta
 - id_rubro, nombre_rubro_grupo, nombre_rubro_clase, uso
-- nodo_s1, nodo_s2, sub_nodo_s3, cod_nodo — jerarquía tablero por cliente
+- sub_nodo_s3, nodo_s1, nodo_s2, cod_nodo — jerarquía tablero por cliente
 - mvto, saldo_inicial, saldo_final, movimiento_debito, movimiento_credito
 - anio_mes ('YYYY-MM'), anio, mes_corto, trimestre, fecha, source_date
 
 Filtro: customer_id = uuid del tenant.
-Agregación típica: SUM(mvto) GROUP BY anio_mes, nombre_rubro_grupo.
-NUNCA usar ABS(mvto) ni SUM(ABS(mvto)): mvto ya trae el signo contable; ABS distorsiona las sumas y no cuadra con Power BI.
+Agregación: SUM(mvto) — NUNCA ABS(mvto) ni SUM(ABS(mvto)).
 
-FILTROS tablero (CRÍTICO):
-- SIEMPRE filtrar por nombre_rubro_grupo con el valor EXACTO del catálogo (gold.vw_dim_accounts).
-- NO pluralizar ni inventar labels (ej. 'Gasto Financiero', no 'Gastos Financieros').
-- NO usar nodo_s1 ni nombre_grupo en WHERE para P&L/balance.
-- Ej. gastos financieros → nombre_rubro_grupo = 'Gasto Financiero' (verificar en dim por cliente)
-- Ej. ingresos operacionales → nombre_rubro_grupo = 'Ingresos Operacionales'
+JERARQUÍA DE FILTROS (elige el nivel según la pregunta):
+1. Rubro KPI (nombre_rubro_grupo): SOLO totales de línea amplia
+   (ej. "total gastos administrativos" → nombre_rubro_grupo = 'Gasto Admon')
+2. Sub-cuenta (nombre_cuenta, sub_nodo_s3, nombre_auxiliar): conceptos ESPECÍFICOS
+   (ej. "seguros" → nombre_cuenta = 'Seguros' o nombre_auxiliar ILIKE '%Seguro%';
+   NO sumar todo Gasto Admon)
+3. Valores exactos del catálogo; no pluralizar rubros ('Gasto Financiero', no 'Gastos Financieros')
 
 ──────────────────────────────────────────────────────────────────────────────
 0b. gold.vw_dim_accounts — catálogo plan de cuentas (SIN montos)
