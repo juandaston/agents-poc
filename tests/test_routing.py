@@ -2,6 +2,8 @@ from semantic_loader import try_heuristic_route
 from llm_client import resolve_fast_model, DEFAULT_FAST_OPENAI_MODEL
 from sql_agent import (
     _account_search_patterns,
+    _concept_ilike_pattern,
+    _extract_requested_concepts,
     _maybe_route_to_ventas_enriched,
     _validate_sql_for_route,
 )
@@ -85,6 +87,20 @@ def test_validate_sql_for_route_separates_multiple_concepts():
         assert "3 conceptos" in str(exc)
 
 
+def test_extracts_and_normalizes_multiple_concepts():
+    question = (
+        "Mano de obra directa, gastos de ventas, gasto de personal "
+        "tráeme el valor de estos 3 de mayo 2026"
+    )
+    assert _extract_requested_concepts(question) == [
+        "Mano de obra directa",
+        "gastos de ventas",
+        "gasto de personal",
+    ]
+    assert _concept_ilike_pattern("Gastos de ventas") == "%gasto%venta%"
+    assert _concept_ilike_pattern("Gasto de personal") == "%gasto%personal%"
+
+
 def test_validate_sql_for_route_accepts_union_for_multiple_concepts():
     question = (
         "Mano de obra directa, gastos de ventas, gasto de personal "
@@ -104,6 +120,41 @@ def test_validate_sql_for_route_accepts_union_for_multiple_concepts():
         WHERE customer_id = 'x' AND uso = 'ER'
     """
     _validate_sql_for_route(sql, "vw_fact_bdp_enriched", question)
+
+
+def test_validate_sql_for_route_rejects_unverified_dimension_value():
+    question = (
+        "Mano de obra directa, gastos de ventas, gasto de personal "
+        "tráeme el valor de estos 3 de mayo 2026"
+    )
+    hints = """
+    - nombre_cuenta = 'Mano de obra directa'
+    - nombre_rubro_grupo = 'Gasto Venta'
+    - nombre_cuenta = 'Gastos de Personal'
+    """
+    sql = """
+        SELECT 'Mano de obra directa' AS concepto, SUM(mvto) AS total
+        FROM gold.vw_fact_bdp_enriched
+        WHERE customer_id = 'x' AND uso = 'ER'
+          AND nombre_cuenta = 'Mano de obra directa'
+        UNION ALL
+        SELECT 'Gastos de Ventas' AS concepto, SUM(mvto) AS total
+        FROM gold.vw_fact_bdp_enriched
+        WHERE customer_id = 'x' AND uso = 'ER'
+          AND nombre_rubro_grupo = 'Gastos de Ventas'
+        UNION ALL
+        SELECT 'Gasto de Personal' AS concepto, SUM(mvto) AS total
+        FROM gold.vw_fact_bdp_enriched
+        WHERE customer_id = 'x' AND uso = 'ER'
+          AND nombre_rubro_grupo = 'Gastos de Personal'
+    """
+    try:
+        _validate_sql_for_route(
+            sql, "vw_fact_bdp_enriched", question, hints
+        )
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "no verificado por DISTINCT" in str(exc)
 
 
 def test_maybe_route_ventas_skips_pure_devoluciones():

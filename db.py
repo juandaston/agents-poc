@@ -287,6 +287,65 @@ def fetch_cuenta_candidates(
         conn.close()
 
 
+def fetch_enriched_dimension_candidates(
+    customer_id: str,
+    ilike_pattern: str,
+    *,
+    limit: int = 25,
+) -> list[dict[str, str]]:
+    """Distinct ER dimension names/values matching one requested concept."""
+    logger.info(
+        "fetching enriched dimension candidates customer_id=%s pattern=%s",
+        customer_id,
+        ilike_pattern,
+    )
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT DISTINCT d.dimension, TRIM(d.value) AS value
+            FROM gold.vw_dim_accounts a
+            CROSS JOIN LATERAL (
+                VALUES
+                    ('nombre_cuenta', a.nombre_cuenta),
+                    ('nombre_auxiliar', a.nombre_auxiliar),
+                    ('sub_nodo_s3', a.sub_nodo_s3),
+                    ('nombre_subcuenta', a.nombre_subcuenta),
+                    ('nombre_rubro_grupo', a.nombre_rubro_grupo)
+            ) AS d(dimension, value)
+            WHERE a.customer_id = %s::uuid
+              AND a.uso = 'ER'
+              AND d.value IS NOT NULL
+              AND TRIM(d.value) <> ''
+              AND d.value ILIKE %s
+            ORDER BY d.dimension, value
+            LIMIT %s
+            """,
+            (customer_id, ilike_pattern, limit),
+        )
+        rows = [
+            {"dimension": str(row[0]).strip(), "value": str(row[1]).strip()}
+            for row in cur.fetchall()
+        ]
+        logger.info(
+            "enriched dimension candidates customer_id=%s pattern=%s count=%s",
+            customer_id,
+            ilike_pattern,
+            len(rows),
+        )
+        return rows
+    except Exception:
+        logger.exception(
+            "failed to fetch enriched dimension candidates customer_id=%s",
+            customer_id,
+        )
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
 def fetch_nombre_rubro_grupo_candidates(
     customer_id: str,
     ilike_patterns: list[str] | None = None,

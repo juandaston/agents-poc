@@ -9,6 +9,7 @@ from db import (
     get_customer_name,
     fetch_nombre_rubro_grupo_candidates,
     fetch_cuenta_candidates,
+    fetch_enriched_dimension_candidates,
 )
 from security import validate_sql
 from llm_client import complete_text, resolve_fast_model
@@ -391,7 +392,57 @@ CUENTAS/SUBCUENTAS COINCIDENTES PARA ESTE CLIENTE (gold.vw_dim_accounts):
 """
 
 
+def _concept_ilike_pattern(concept: str) -> str:
+    tokens = [
+        token
+        for token in re.findall(r"[a-záéíóúñü]+", concept.lower())
+        if token not in {"de", "del", "la", "el", "los", "las", "y"}
+    ]
+    stems = [
+        token[:-1] if len(token) > 5 and token.endswith("s") else token
+        for token in tokens
+    ]
+    return "%" + "%".join(stems) + "%"
+
+
+def _build_multi_concept_hints_block(
+    question: str,
+    customer_id: str,
+) -> str:
+    concepts = _extract_requested_concepts(question)
+    if len(concepts) < 2:
+        return ""
+
+    sections: list[str] = []
+    for concept in concepts:
+        pattern = _concept_ilike_pattern(concept)
+        candidates = fetch_enriched_dimension_candidates(customer_id, pattern)
+        if candidates:
+            values = "\n".join(
+                f"    - {row['dimension']} = '{row['value']}'"
+                for row in candidates
+            )
+        else:
+            values = "    - SIN COINCIDENCIAS: no inventes campo ni valor"
+        sections.append(
+            f"  CONCEPTO SOLICITADO: '{concept}'\n"
+            f"  DISTINCT verificados con patrón '{pattern}':\n{values}"
+        )
+
+    return f"""
+VALIDACIÓN DISTINCT POR CADA CONCEPTO EN gold.vw_dim_accounts (solo uso='ER'):
+{chr(10).join(sections)}
+- En cada SELECT usa el campo y el valor EXACTOS mostrados para ese concepto.
+- NO conviertas nombre_cuenta en nombre_rubro_grupo ni inventes plurales.
+- Cada concepto debe producir su propia fila mediante UNION ALL.
+"""
+
+
 def _resolve_enriched_hints(question: str, customer_id: str, *, broad: bool = False) -> str:
+    multi_concept_block = _build_multi_concept_hints_block(question, customer_id)
+    if multi_concept_block:
+        return multi_concept_block
+
     if not broad and not _is_broad_rubro_only_question(question):
         account_patterns = _account_search_patterns(question)
         if account_patterns:
@@ -796,7 +847,7 @@ Devuelve SOLO SQL.
 
     try:
         validated = validate_sql(sql)
-        _validate_sql_for_route(validated, table, question)
+        _validate_sql_for_route(validated, table, question, rubro_hints or "")
     except ValueError as exc:
         if table == "vw_fact_bdp_enriched" and not retry_note:
             logger.warning(
@@ -849,27 +900,72 @@ _ENRICHED_SQL_WRONG_SOURCE_RETRY_NOTE = (
 )
 
 
-def _requested_concept_count(question: str) -> int:
-    q = (question or "").lower()
+_QUERY_WORD_RE = re.compile(
+    r"\b(tr[aá]e(?:me)?|dame|muestra(?:me)?|consulta|cu[aá]nto|"
+    r"quiero|necesito|calcula|obt[eé]n|busca)\b",
+    re.IGNORECASE,
+)
+_MONTH_NAME_RE = (
+    r"enero|febrero|marzo|abril|mayo|junio|julio|agosto|"
+    r"septiembre|octubre|noviembre|diciembre"
+)
+
+
+def _extract_requested_concepts(question: str) -> list[str]:
+    q = (question or "").strip()
     comma_count = q.count(",")
-    has_query_word = bool(
-        re.search(
-            r"\b(tr[aá]e(?:me)?|dame|muestra(?:me)?|consulta|valor|total|cu[aá]nto)\b",
-            q,
-        )
+    query_word = _QUERY_WORD_RE.search(q)
+    has_list_shape = comma_count >= 2 or (
+        comma_count == 1 and bool(re.search(r"\s+y\s+", q, re.IGNORECASE))
     )
-    if comma_count >= 2 and has_query_word:
-        return comma_count + 1
-    if (
-        comma_count == 1
-        and bool(re.search(r"\s+y\s+", q))
-        and has_query_word
-    ):
-        return 3
-    return 1
+    if not has_list_shape:
+        return []
+
+    first_comma = q.find(",")
+    if query_word and query_word.start() > first_comma:
+        list_text = q[: query_word.start()]
+    elif query_word:
+        list_text = q[query_word.end() :]
+        list_text = re.sub(
+            r"^\s*(?:el\s+)?(?:valor\s+total|valor|total)\s+de\s+",
+            "",
+            list_text,
+            flags=re.IGNORECASE,
+        )
+    else:
+        list_text = q
+
+    list_text = re.split(
+        rf"\s+de\s+(?:{_MONTH_NAME_RE})\b",
+        list_text,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    concepts = [
+        part.strip(" ¿?¡!.,")
+        for part in re.split(r"\s*,\s*|\s+y\s+", list_text, flags=re.IGNORECASE)
+    ]
+    concepts = [concept for concept in concepts if concept]
+    month_only = re.compile(
+        rf"^(?:de\s+)?(?:{_MONTH_NAME_RE})(?:\s+\d{{4}})?$",
+        re.IGNORECASE,
+    )
+    if sum(bool(month_only.fullmatch(concept)) for concept in concepts) >= 2:
+        return []
+    return concepts
 
 
-def _validate_sql_for_route(sql: str, table: str, question: str = "") -> None:
+def _requested_concept_count(question: str) -> int:
+    concepts = _extract_requested_concepts(question)
+    return len(concepts) if len(concepts) > 1 else 1
+
+
+def _validate_sql_for_route(
+    sql: str,
+    table: str,
+    question: str = "",
+    dimension_hints: str = "",
+) -> None:
     norm = (sql or "").lower()
     if table != "vw_fact_bdp_enriched":
         return
@@ -895,6 +991,46 @@ def _validate_sql_for_route(sql: str, table: str, question: str = "") -> None:
             raise ValueError("Cada SELECT debe incluir su propio filtro customer_id")
         if len(re.findall(r"\bas\s+concepto\b", norm)) < concept_count:
             raise ValueError("Cada SELECT debe devolver una etiqueta AS concepto")
+        allowed_pairs = {
+            (dimension.lower(), value.lower())
+            for dimension, value in re.findall(
+                r"-\s*(nombre_cuenta|nombre_auxiliar|sub_nodo_s3|"
+                r"nombre_subcuenta|nombre_rubro_grupo)\s*=\s*'([^']+)'",
+                dimension_hints,
+                re.IGNORECASE,
+            )
+        }
+        if allowed_pairs:
+            if re.search(
+                r"\b(nombre_cuenta|nombre_auxiliar|sub_nodo_s3|"
+                r"nombre_subcuenta|nombre_rubro_grupo)\s+ilike\b",
+                norm,
+            ):
+                raise ValueError(
+                    "Para varios conceptos usa igualdad con los valores DISTINCT exactos"
+                )
+            sql_pairs = {
+                (dimension.lower(), value.lower())
+                for dimension, value in re.findall(
+                    r"\b(nombre_cuenta|nombre_auxiliar|sub_nodo_s3|"
+                    r"nombre_subcuenta|nombre_rubro_grupo)\s*=\s*'([^']+)'",
+                    sql,
+                    re.IGNORECASE,
+                )
+            }
+            invalid_pairs = sql_pairs - allowed_pairs
+            if invalid_pairs:
+                invalid = ", ".join(
+                    f"{dimension}='{value}'"
+                    for dimension, value in sorted(invalid_pairs)
+                )
+                raise ValueError(
+                    f"Campo/valor no verificado por DISTINCT: {invalid}"
+                )
+            if len(sql_pairs) < concept_count:
+                raise ValueError(
+                    "Cada concepto debe usar un campo/valor DISTINCT verificado"
+                )
     for forbidden in _ENRICHED_FORBIDDEN_IN_SQL:
         # Match complete SQL identifiers only. A substring check incorrectly
         # treats `fact_bdp` as present inside `vw_fact_bdp_enriched`.
