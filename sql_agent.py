@@ -385,6 +385,7 @@ def generate_sql(
     retry_note: str | None = None,
     rubro_hints: str | None = None,
     history_block: str = "",
+    temporal_hints: str = "",
 ):
 
     source = qualified_source(table, schema)
@@ -401,6 +402,7 @@ def generate_sql(
     table_map = _table_map()
     schema_ctx = _schema_context()
     history_section = history_block or ""
+    temporal_section = temporal_hints or ""
 
     if table == "vw_dim_accounts":
         prompt = f"""
@@ -440,6 +442,7 @@ Eres un experto en SQL PostgreSQL financiero.
 
 {schema_ctx}
 {history_section}
+{temporal_section}
 {rubro_block}
 VISTA ACTUAL:
 gold.vw_fact_bdp_enriched
@@ -454,9 +457,13 @@ REGLAS (OBLIGATORIAS):
 - Cuenta (jerarquía PUC): id_auxiliar, nombre_auxiliar, id_cuenta, nombre_cuenta,
   id_grupo, nombre_grupo, id_subcuenta, nombre_subcuenta
 - Rubros KPI tablero: nombre_rubro_grupo, nombre_rubro_clase, uso, sub_nodo_s3, nodo_s1, nodo_s2, cod_nodo
-- FECHAS: anio_mes ('YYYY-MM'), anio (int), fecha, source_date
-  - Mes: WHERE anio_mes = '2026-06'
-  - Año: WHERE anio = 2026 OR anio_mes LIKE '2026-%'
+- FECHAS (OBLIGATORIO cuando aplique):
+  - Si hay PERIODOS DETECTADOS arriba → filtra con anio_mes en WHERE (no escanees toda la historia)
+  - Si la pregunta o el historial mencionan mes/año → SIEMPRE AND anio_mes = 'YYYY-MM' o anio_mes IN (...)
+  - Mes único: WHERE anio_mes = '2026-06' → SELECT SUM(mvto) (sin GROUP BY anio_mes)
+  - Comparar jun 2026 vs jun 2025: WHERE anio_mes IN ('2026-06','2025-06') GROUP BY anio_mes
+  - Año completo: WHERE anio = 2026 OR anio_mes LIKE '2026-%'
+  - Tendencia / histórico / evolución completa: entonces GROUP BY anio_mes (con LIMIT o rango acotado)
   - Último periodo: ORDER BY anio DESC, anio_mes DESC LIMIT 1 (subconsulta o CTE si agregas)
 - JERARQUÍA DE FILTROS (CRÍTICO — elige el nivel según la pregunta):
   1. Rubro KPI (nombre_rubro_grupo): SOLO cuando piden el TOTAL de una línea amplia
@@ -787,6 +794,7 @@ def _consult_with_silver_fallback(
     *,
     lookup_question: str | None = None,
     history_block: str = "",
+    temporal_hints: str = "",
 ) -> dict:
     """
     Try gold (or primary) first, then silver_fallback from catalog.
@@ -818,6 +826,7 @@ def _consult_with_silver_fallback(
             agent,
             rubro_hints=rubro_hints,
             history_block=history_block,
+            temporal_hints=temporal_hints,
         )
         last_sql = sql
         data, sql_err = _try_run_sql(sql, schema, source)
@@ -838,6 +847,7 @@ def _consult_with_silver_fallback(
                 retry_note=_ENRICHED_SQL_GROUPBY_RETRY_NOTE,
                 rubro_hints=rubro_hints,
                 history_block=history_block,
+                temporal_hints=temporal_hints,
             )
             retry_data, retry_err = _try_run_sql(retry_sql, schema, source)
             if retry_data is not None and not retry_err:
@@ -873,6 +883,7 @@ def _consult_with_silver_fallback(
                 retry_note=_ENRICHED_SQL_RETRY_NOTE,
                 rubro_hints=retry_hints,
                 history_block=history_block,
+                temporal_hints=temporal_hints,
             )
             retry_data, retry_err = _try_run_sql(retry_sql, schema, source)
             if has_real_data(retry_data) and not retry_err:
@@ -953,14 +964,15 @@ def run_financial_query(
         normalized_history,
         lambda text: sanitize_text_for_llm(text, privacy_secrets),
     )
-    history_block, effective_question = history_for_prompts(
+    history_block, effective_question, temporal_hints = history_for_prompts(
         safe_question, safe_history
     )
     if safe_history:
         logger.info(
-            "conversation context turns=%s follow_up_effective=%s",
+            "conversation context turns=%s follow_up_effective=%s periods_hint=%s",
             len(safe_history),
             effective_question != safe_question,
+            bool(temporal_hints),
         )
 
     route = route_question(effective_question, agent, history_block=history_block)
@@ -990,6 +1002,7 @@ def run_financial_query(
             agent,
             lookup_question=effective_question,
             history_block=history_block,
+            temporal_hints=temporal_hints,
         )
         if hit["data"] is None:
             logger.warning(

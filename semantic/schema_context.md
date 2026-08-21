@@ -125,6 +125,11 @@ JERARQUÍA DE FILTROS (elige el nivel según la pregunta):
    NO sumar todo Gasto Admon)
 3. Valores exactos del catálogo; no pluralizar rubros ('Gasto Financiero', no 'Gastos Financieros')
 
+FILTRO TEMPORAL:
+- Si la pregunta o el historial mencionan mes/año → filtrar anio_mes en WHERE (no GROUP BY toda la serie).
+- Comparación mismo mes distinto año: anio_mes IN ('2026-06','2025-06').
+- Tendencia/histórico completo: solo entonces GROUP BY anio_mes sin filtro estrecho.
+
 ──────────────────────────────────────────────────────────────────────────────
 0b. gold.vw_dim_accounts — catálogo plan de cuentas (SIN montos)
 ──────────────────────────────────────────────────────────────────────────────

@@ -1,7 +1,10 @@
 import unittest
 
 from conversation_history import (
+    build_temporal_hints_block,
+    extract_anio_mes_periods,
     format_history_block,
+    history_for_prompts,
     is_likely_followup,
     normalize_messages,
     resolve_effective_question,
@@ -49,6 +52,32 @@ class ConversationHistoryTests(unittest.TestCase):
         block = format_history_block(history)
         self.assertIn("pregunta anterior", block)
         self.assertNotIn("Usuario: y en mayo?", block)
+
+
+    def test_extract_anio_mes_periods(self):
+        text = "junio de 2026 y junio de 2025"
+        periods = extract_anio_mes_periods(text)
+        self.assertEqual(periods, ["2025-06", "2026-06"])
+
+    def test_build_temporal_hints_single_month(self):
+        block = build_temporal_hints_block("total en junio 2026", [])
+        self.assertIn("anio_mes = '2026-06'", block)
+
+    def test_history_for_prompts_includes_temporal(self):
+        history = [
+            {"role": "user", "content": "compras en junio 2026"},
+            {
+                "role": "assistant",
+                "content": "En junio de 2026 fueron X; en junio de 2025 fueron Y.",
+            },
+        ]
+        block, effective, temporal = history_for_prompts(
+            "cuando fue de compras de materia prima", history
+        )
+        self.assertIn("materia prima", effective)
+        self.assertIn("2026-06", temporal)
+        self.assertIn("2025-06", temporal)
+        self.assertIn("anio_mes IN", temporal)
 
 
 if __name__ == "__main__":
