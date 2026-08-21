@@ -65,6 +65,47 @@ def test_validate_sql_for_route_requires_er_in_where():
         assert "uso = 'ER'" in str(exc)
 
 
+def test_validate_sql_for_route_separates_multiple_concepts():
+    question = (
+        "Mano de obra directa, gastos de ventas, gasto de personal "
+        "tráeme el valor de estos 3 de mayo 2026"
+    )
+    combined_sql = (
+        "SELECT SUM(mvto) FROM gold.vw_fact_bdp_enriched "
+        "WHERE customer_id = 'x' AND uso = 'ER' "
+        "AND (nombre_cuenta = 'Mano de obra directa' "
+        "OR nombre_rubro_grupo = 'Gastos de Ventas')"
+    )
+    try:
+        _validate_sql_for_route(
+            combined_sql, "vw_fact_bdp_enriched", question
+        )
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "3 conceptos" in str(exc)
+
+
+def test_validate_sql_for_route_accepts_union_for_multiple_concepts():
+    question = (
+        "Mano de obra directa, gastos de ventas, gasto de personal "
+        "tráeme el valor de estos 3 de mayo 2026"
+    )
+    sql = """
+        SELECT 'Mano de obra directa' AS concepto, SUM(mvto) AS total
+        FROM gold.vw_fact_bdp_enriched
+        WHERE customer_id = 'x' AND uso = 'ER'
+        UNION ALL
+        SELECT 'Gastos de Ventas' AS concepto, SUM(mvto) AS total
+        FROM gold.vw_fact_bdp_enriched
+        WHERE customer_id = 'x' AND uso = 'ER'
+        UNION ALL
+        SELECT 'Gasto de Personal' AS concepto, SUM(mvto) AS total
+        FROM gold.vw_fact_bdp_enriched
+        WHERE customer_id = 'x' AND uso = 'ER'
+    """
+    _validate_sql_for_route(sql, "vw_fact_bdp_enriched", question)
+
+
 def test_maybe_route_ventas_skips_pure_devoluciones():
     route = {"tables": ["vw_fact_bdp_enriched"], "reason": "primary"}
     out = _maybe_route_to_ventas_enriched(

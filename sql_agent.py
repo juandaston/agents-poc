@@ -494,6 +494,11 @@ REGLAS (OBLIGATORIAS):
 - PROHIBIDO: fact_nota_credito, fact_venta, fact_bdp, silver.*, vw_ventas_netas_mes
 - SIEMPRE filtra por customer_id = '{CUSTOMER_ID_PLACEHOLDER}'
 - SIEMPRE filtra por uso = 'ER' (Estado de Resultados). Por ahora NO consultes uso = 'BG'
+- VARIOS CONCEPTOS (ej. "mano de obra, gastos de ventas y gasto de personal"):
+  - NUNCA combines sus filtros con OR dentro de un único SUM
+  - Haz un SELECT independiente por concepto y únelos con UNION ALL
+  - Cada SELECT debe devolver 'Nombre solicitado' AS concepto, SUM(mvto) AS total
+  - Repite en CADA SELECT customer_id, uso = 'ER', periodo y el filtro específico del concepto
 - Montos: mvto (movimiento), saldo_final, saldo_inicial, movimiento_debito, movimiento_credito
 - Cuenta (jerarquía PUC): id_auxiliar, nombre_auxiliar, id_cuenta, nombre_cuenta,
   id_grupo, nombre_grupo, id_subcuenta, nombre_subcuenta
@@ -791,7 +796,7 @@ Devuelve SOLO SQL.
 
     try:
         validated = validate_sql(sql)
-        _validate_sql_for_route(validated, table)
+        _validate_sql_for_route(validated, table, question)
     except ValueError as exc:
         if table == "vw_fact_bdp_enriched" and not retry_note:
             logger.warning(
@@ -837,12 +842,34 @@ _ENRICHED_SQL_WRONG_SOURCE_RETRY_NOTE = (
     "Debes consultar SOLO gold.vw_fact_bdp_enriched. "
     "PROHIBIDO fact_nota_credito, fact_venta y cualquier tabla silver. "
     "SIEMPRE incluye uso = 'ER'; por ahora no consultes uso = 'BG'. "
+    "Si piden varios conceptos, genera un SELECT con etiqueta y SUM(mvto) por cada "
+    "concepto, unidos con UNION ALL; nunca un único SUM con filtros OR combinados. "
     "Devoluciones: FROM gold.vw_fact_bdp_enriched WHERE nombre_auxiliar ILIKE '%devoluc%' "
     "o nombre_cuenta ILIKE '%devoluc%'; filtro temporal con anio_mes; SUM(mvto)."
 )
 
 
-def _validate_sql_for_route(sql: str, table: str) -> None:
+def _requested_concept_count(question: str) -> int:
+    q = (question or "").lower()
+    comma_count = q.count(",")
+    has_query_word = bool(
+        re.search(
+            r"\b(tr[aá]e(?:me)?|dame|muestra(?:me)?|consulta|valor|total|cu[aá]nto)\b",
+            q,
+        )
+    )
+    if comma_count >= 2 and has_query_word:
+        return comma_count + 1
+    if (
+        comma_count == 1
+        and bool(re.search(r"\s+y\s+", q))
+        and has_query_word
+    ):
+        return 3
+    return 1
+
+
+def _validate_sql_for_route(sql: str, table: str, question: str = "") -> None:
     norm = (sql or "").lower()
     if table != "vw_fact_bdp_enriched":
         return
@@ -854,6 +881,20 @@ def _validate_sql_for_route(sql: str, table: str) -> None:
     er_filter_pattern = rf"\bwhere\b[\s\S]*{er_predicate}"
     if not re.search(er_filter_pattern, norm):
         raise ValueError("SQL debe incluir uso = 'ER'")
+    concept_count = _requested_concept_count(question)
+    if concept_count > 1:
+        union_count = len(re.findall(r"\bunion\s+all\b", norm))
+        if union_count < concept_count - 1:
+            raise ValueError(
+                f"Los {concept_count} conceptos deben consultarse por separado "
+                "y unirse con UNION ALL"
+            )
+        if len(re.findall(er_predicate, norm)) < concept_count:
+            raise ValueError("Cada SELECT debe incluir su propio filtro uso = 'ER'")
+        if len(re.findall(r"(?<![a-z0-9_])customer_id\s*=", norm)) < concept_count:
+            raise ValueError("Cada SELECT debe incluir su propio filtro customer_id")
+        if len(re.findall(r"\bas\s+concepto\b", norm)) < concept_count:
+            raise ValueError("Cada SELECT debe devolver una etiqueta AS concepto")
     for forbidden in _ENRICHED_FORBIDDEN_IN_SQL:
         # Match complete SQL identifiers only. A substring check incorrectly
         # treats `fact_bdp` as present inside `vw_fact_bdp_enriched`.
