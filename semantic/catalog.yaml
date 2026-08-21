@@ -10,6 +10,7 @@ global_rules:
   - Filtra SIEMPRE por customer_id en tablas silver y vistas gold.
   - PREFERIR gold.vw_fact_bdp_enriched para montos contables (mvto, saldos), P&L, balance y tableros (fact_bdp + rubros ya unidos).
   - En vw_fact_bdp_enriched filtrar SIEMPRE por nombre_rubro_grupo (valor exacto del catálogo por cliente); no usar nodo_s1 ni nombre_grupo en WHERE para P&L.
+  - Agregar montos con SUM(mvto) — NUNCA ABS(mvto) ni SUM(ABS(mvto)); mvto ya tiene signo contable correcto.
   - PREFERIR gold.vw_dim_accounts SOLO para catálogo de cuentas / jerarquía SIN montos (no tiene mvto ni saldo).
   - PREFERIR gold.vw_kpis_financiero SOLO para ratios pre-calculados (ROE, ROA, liquidez, endeudamiento) cuando la pregunta lo pida explícitamente.
   - PREFERIR gold.vw_ventas_netas_mes para ventas netas/brutas mensuales (facturación − notas crédito).
@@ -327,7 +328,7 @@ routing:
   rules:
     - Por defecto o preguntas con montos / ambiguas contables → vw_fact_bdp_enriched.
     - Catálogo de cuentas / jerarquía sin montos → vw_dim_accounts.
-    - Ingresos, utilidades, costos, gastos, márgenes, patrimonio, saldos → vw_fact_bdp_enriched (SUM mvto o saldo_final).
+    - Ingresos, utilidades, costos, gastos, márgenes, patrimonio, saldos → vw_fact_bdp_enriched (SUM(mvto) sin ABS, o saldo_final).
     - Ratios pre-calculados (ROE, ROA, liquidez, endeudamiento, apalancamiento) → vw_kpis_financiero.
     - Si pregunta solo semáforos del periodo más reciente → vw_semaforos_cliente.
     - Si pregunta ventas netas/brutas mensuales o facturación menos notas crédito → SOLO vw_ventas_netas_mes.

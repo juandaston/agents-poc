@@ -358,7 +358,8 @@ REGLAS (OBLIGATORIAS):
   - NO uses nodo_s1 ni nombre_grupo en WHERE para conceptos P&L/balance
   - NO pluralices ni inventes labels (ej. 'Gasto Financiero', no 'Gastos Financieros')
   - Ejemplos típicos (verificar en catálogo): 'Gasto Financiero', 'Gasto Admon', 'Ingresos Operacionales'
-- Para totales mensuales: SUM(ABS(mvto)) o SUM(mvto) GROUP BY anio_mes, nombre_rubro_grupo
+- Para totales mensuales: SUM(mvto) GROUP BY anio_mes, nombre_rubro_grupo
+  - NUNCA uses ABS(mvto) ni SUM(ABS(mvto)): mvto ya trae el signo contable; ABS distorsiona débitos/créditos y no cuadra con Power BI
   - NO incluyas fecha en GROUP BY si ya filtras un solo anio_mes
 - NO uses vw_kpis_financiero ni fact_bdp directo; esta vista ya une BDP + rubros + tiempo
 - Selecciona solo columnas relevantes; máximo 100 filas

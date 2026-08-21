@@ -114,7 +114,8 @@ Columnas clave:
 - anio_mes ('YYYY-MM'), anio, mes_corto, trimestre, fecha, source_date
 
 Filtro: customer_id = uuid del tenant.
-Agregación típica: SUM(mvto) o SUM(ABS(mvto)) GROUP BY anio_mes, nombre_rubro_grupo.
+Agregación típica: SUM(mvto) GROUP BY anio_mes, nombre_rubro_grupo.
+NUNCA usar ABS(mvto) ni SUM(ABS(mvto)): mvto ya trae el signo contable; ABS distorsiona las sumas y no cuadra con Power BI.
 
 FILTROS tablero (CRÍTICO):
 - SIEMPRE filtrar por nombre_rubro_grupo con el valor EXACTO del catálogo (gold.vw_dim_accounts).
