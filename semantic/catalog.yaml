@@ -9,7 +9,8 @@ gold_schema: gold
 global_rules:
   - Filtra SIEMPRE por customer_id en tablas silver y vistas gold.
   - PREFERIR gold.vw_dim_accounts como PRIMERA vista a consultar (datos organizados de tableros; misma fuente que dashboards).
-  - PREFERIR gold.vw_kpis_financiero para KPIs, ratios, semáforos y estado de resultados agregado (si vw_dim_accounts no alcanza).
+  - PREFERIR gold.vw_dim_accounts para ingresos, utilidades, costos, gastos y estado de resultados (rubros ya filtrados en tablero).
+  - PREFERIR gold.vw_kpis_financiero SOLO para ratios pre-calculados (ROE, ROA, liquidez, endeudamiento) cuando la pregunta lo pida explícitamente.
   - PREFERIR gold.vw_ventas_netas_mes para ventas netas/brutas mensuales (facturación − notas crédito).
   - PREFERIR gold.vw_ventas_por_producto_mes para mix, top productos y ventas por producto.
   - PREFERIR gold.vw_presupuesto_vs_real_mes para presupuesto vs real, cumplimiento y variación.
@@ -31,7 +32,7 @@ entities:
     layer: gold
     kind: view
     description: Vista principal tableros — plan de cuentas enriquecido con rubros contables (datos organizados por cliente)
-    prefer_for: [tablero, cuentas, rubros, plan contable, auxiliar, subcuenta, grupo, clase, balance, movimientos]
+    prefer_for: [tablero, cuentas, rubros, plan contable, auxiliar, subcuenta, grupo, clase, balance, movimientos, ingresos, utilidad, costos, gastos, estado de resultados, margen]
     customer_filter: customer_id
     grain: [customer_id, id_auxiliar]
     silver_fallback: [dim_accounts]
@@ -198,11 +199,30 @@ routing:
     - presupuesto_proyeccion
     - dim_customers
     - dim_accounts
+  tablero_keywords:
+    - ingresos operacionales
+    - ingresos
+    - utilidad neta
+    - utilidad bruta
+    - utilidad operacional
+    - utilidad
+    - costo de ventas
+    - costo ventas
+    - gastos administrativos
+    - gastos de ventas
+    - gastos financieros
+    - estado de resultados
+    - margen bruto
+    - margen neto
+    - margen
+    - patrimonio
+    - activo
+    - pasivo
+    - rubro
+    - tablero
   kpi_keywords:
     - kpi
     - kpis
-    - margen
-    - utilidad
     - roe
     - roa
     - liquidez
@@ -213,16 +233,8 @@ routing:
     - razon corriente
     - razón corriente
     - capital de trabajo
-    - patrimonio
     - autonomia
     - autonomía
-    - ingresos operacionales
-    - utilidad neta
-    - utilidad bruta
-    - utilidad operacional
-    - costo de ventas
-    - gastos administrativos
-    - estado de resultados
   ventas_netas_keywords:
     - ventas netas
     - venta neta
@@ -285,7 +297,8 @@ routing:
     - alertas financieras
   rules:
     - Por defecto o preguntas generales / ambiguas → vw_dim_accounts (vista principal de tableros).
-    - Si la pregunta se responde con KPIs agregados → vw_kpis_financiero (no fact_bdp).
+    - Ingresos, utilidades, costos, gastos, márgenes, patrimonio → vw_dim_accounts (rubros del tablero).
+    - Ratios pre-calculados (ROE, ROA, liquidez, endeudamiento, apalancamiento) → vw_kpis_financiero.
     - Si pregunta solo semáforos del periodo más reciente → vw_semaforos_cliente.
     - Si pregunta ventas netas/brutas mensuales o facturación menos notas crédito → SOLO vw_ventas_netas_mes.
     - Si pregunta mix, top productos o ventas por producto → vw_ventas_por_producto_mes (NO fact_venta).

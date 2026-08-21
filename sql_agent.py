@@ -19,6 +19,7 @@ from prompt_builder import build_customer_answer_prompt
 from semantic_loader import (
     build_intents_list,
     build_kpi_question_pattern,
+    build_tablero_question_pattern,
     build_ventas_netas_question_pattern,
     build_router_entities_block,
     build_routing_rules_block,
@@ -59,6 +60,10 @@ def _ventas_netas_question_re() -> re.Pattern[str]:
     return build_ventas_netas_question_pattern()
 
 
+def _tablero_question_re() -> re.Pattern[str]:
+    return build_tablero_question_pattern()
+
+
 def _maybe_route_to_ventas_netas(question: str, route: dict) -> dict:
     """Ventas netas/brutas mensuales → vw_ventas_netas_mes."""
     view = "vw_ventas_netas_mes"
@@ -77,14 +82,19 @@ def _maybe_route_to_ventas_netas(question: str, route: dict) -> dict:
 
 
 def _maybe_route_to_kpis(question: str, route: dict) -> dict:
-    """Fallback: KPI-style questions should use the pre-aggregated view."""
+    """Fallback: ratio/KPI questions → vw_kpis_financiero (skip tablero / dim_accounts)."""
     kpi_table = _kpi_table()
+    primary_table = _primary_table()
     tables = route.get("tables") or []
     if kpi_table in tables:
+        return route
+    if primary_table in tables:
         return route
     if any(t in tables for t in ("fact_venta", "fact_nota_credito", "presupuesto_proyeccion", "dim_customers")):
         return route
     if _ventas_netas_question_re().search(question or ""):
+        return route
+    if _tablero_question_re().search(question or ""):
         return route
     if not _kpi_question_re().search(question or ""):
         return route
@@ -94,6 +104,23 @@ def _maybe_route_to_kpis(question: str, route: dict) -> dict:
         "tables": [kpi_table],
         "intent": "kpis",
         "reason": (route.get("reason") or "") + f" [auto: KPI keywords → {kpi_table}]",
+    }
+
+
+def _maybe_route_to_tablero(question: str, route: dict) -> dict:
+    """P&L / tablero → vw_dim_accounts (evita vw_kpis_financiero cuando falla)."""
+    primary_table = _primary_table()
+    tables = route.get("tables") or []
+    if primary_table in tables:
+        return route
+    if not _tablero_question_re().search(question or ""):
+        return route
+    logger.info("tablero keywords detected; overriding route to %s", primary_table)
+    return {
+        **route,
+        "tables": [primary_table],
+        "intent": route.get("intent") or "mixto",
+        "reason": (route.get("reason") or "") + f" [auto: tablero → {primary_table}]",
     }
 
 
@@ -227,8 +254,9 @@ REGLAS (OBLIGATORIAS):
 - SIEMPRE filtra por customer_id = '{CUSTOMER_ID_PLACEHOLDER}'
 - Columnas clave: id_auxiliar, nombre_auxiliar, nombre_cuenta, nombre_grupo, nombre_clase,
   nombre_rubro_grupo, nombre_rubro_clase
-- Usa esta vista para plan de cuentas, rubros, jerarquía contable y datos organizados del tablero
-- NO uses dim_accounts ni fact_bdp si esta vista responde la pregunta
+- Usa esta vista para plan de cuentas, rubros, jerarquía contable y métricas del tablero
+  (ingresos operacionales, utilidades, costos, gastos — filtra por nombre_rubro_grupo / rubro según la pregunta)
+- NO uses vw_kpis_financiero ni fact_bdp si esta vista responde la pregunta
 - Selecciona solo columnas relevantes (evita SELECT * salvo resumen de catálogo)
 - Ordena por id_auxiliar o nombre_rubro_grupo según la pregunta
 - máximo 100 filas
@@ -589,6 +617,7 @@ def run_financial_query(question: str, customer_id: str, schema: str, customer_t
 
     route = route_question(safe_question, agent)
     route = _maybe_route_to_ventas_netas(safe_question, route)
+    route = _maybe_route_to_tablero(safe_question, route)
     route = _maybe_route_to_kpis(safe_question, route)
     route = _prefer_kpi_view(route)
 
